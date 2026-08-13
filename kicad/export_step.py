@@ -15,28 +15,45 @@ repo (OpenRX/OpenRX-Lite/, OpenFC-Lite/hardware/), so anchoring to the board
 would scatter the output. One directory per repo, always at the top.
 
 THE STANDARD EXPORT IS: board body + components + pads + silkscreen.
-Three deliberate decisions, each measured rather than assumed:
+Each decision below was measured, not assumed:
 
-  Soldermask is EXCLUDED. kicad-cli gives the mask a 17% transparency factor and
-  silkscreen a 10% one, which is what made earlier exports look like frosted
-  glass with the components showing through. The mask solid also spans
-  z 0.91-0.96 mm on a 1.0 mm board while the pads top out at 0.95 mm, so it sat
-  *over* the gold pads and greyed them out. The board body is already opaque
-  green, so dropping the mask gives one solid PCB with visible gold pads.
+  Soldermask is EXCLUDED. kicad-cli does NOT model mask apertures: exporting
+  F.Mask + B.Mask for a whole board yields 3 ADVANCED_FACEs, i.e. two flat
+  sheets with no openings cut in them. Including it therefore buries every pad
+  under an unbroken green slab. It is also stamped with a 17% transparency
+  factor (silkscreen gets 10%), which is what made earlier exports look like
+  frosted glass. The board body is already opaque green, so leaving the mask
+  out is both more correct and smaller.
 
-  Tracks and zones are EXCLUDED. Copper spans z 0.91-0.945 mm, entirely inside
-  where the mask would be, so it is invisible from outside on a real board.
+  KNOWN LIMITATION from the same cause: graphics drawn on F.Mask/B.Mask (logos,
+  lettering) are mask openings that expose bare copper on the real board. Since
+  kicad-cli emits no apertures, that copper cannot be shown by any combination
+  of flags. Rendering it would mean synthesising the exposed-copper regions
+  (mask graphics INTERSECT copper) as geometry, which this script does not yet do.
+
+  Tracks and zones are EXCLUDED. Copper spans z 0.91-0.945 mm on a 1.0 mm
+  board, under the mask on a real board, so it is invisible from outside.
   Including it roughly doubles the file for geometry nobody can see.
 
-  Copper outside the board outline is REMOVED (--clip, on by default). Edge
-  pads are drawn past Edge.Cuts on purpose so the fab plates and routes through
-  them, but on the finished board the router cuts that copper away. kicad-cli
-  exports the full uncut pad, leaving tabs hanging in space. This clips partly
-  outside pads to the outline and deletes fully outside ones, on a TEMP COPY of
-  the board. The source .kicad_pcb is never written.
+  Everything past Edge.Cuts is CUT (--clip, on by default). Any pad with copper
+  outside the outline is REBUILT, not edited: intersect its copper with the
+  outline, delete the pad, and add a fresh SMD pad carrying the result. Editing
+  in place looks like it works and does not. A pad that is already
+  PAD_SHAPE_CUSTOM, or whose padstack is front/inner/back, keeps its original
+  primitives and stays full size, with no error raised. A rebuilt pad is
+  uniform, unrotated, drill-free and empty, so none of those rules apply.
+  Dropping the drill matters on its own: plated holes export as barrels at the
+  drill's position and size regardless of pad shape, so a castellated hole on
+  the outline used to leave a tube hanging in space.
+
+  Verified across all 16 boards that have a closed outline: zero pads and zero
+  holes with geometry past Edge.Cuts. Component 3D models are NOT clipped, that
+  needs a CAD kernel which is not available here, so a connector body that
+  genuinely overhangs will still overhang.
 
 Any leftover transparency is zeroed in the written STEP so nothing renders
-see-through.
+see-through, and product names are rewritten from the temp filename back to the
+product name.
 
 --preset exists only as an escape hatch for copper inspection work, and its
 output does not belong in a repo:
@@ -60,6 +77,7 @@ Usage:
 """
 import argparse
 import glob
+import math
 import os
 import re
 import shutil
@@ -160,7 +178,7 @@ def clip_board_to_outline(board_path, scratch):
     try:
         import pcbnew
     except ImportError:
-        return board_path, None, None
+        return board_path, None, None, None
 
     stem = os.path.splitext(os.path.basename(board_path))[0]
     srcdir = os.path.dirname(os.path.abspath(board_path))
@@ -179,52 +197,120 @@ def clip_board_to_outline(board_path, scratch):
 
     outline = pcbnew.SHAPE_POLY_SET()
     if not board.GetBoardPolygonOutlines(outline, False) or outline.OutlineCount() == 0:
-        return board_path, None, None
+        # No closed Edge.Cuts to clip against. That is a board defect, not an
+        # export problem, and it must not be reported as "pcbnew missing".
+        return board_path, "no-outline", None, None
 
     L = pcbnew.UNDEFINED_LAYER  # padstack "all layers"
-    clipped = deleted = 0
+    clipped = deleted = undrilled = 0
+
+    def outside_area(poly):
+        t = pcbnew.SHAPE_POLY_SET(poly)
+        t.BooleanSubtract(outline)
+        return sum(abs(t.Outline(i).Area()) for i in range(t.OutlineCount())) / 1e12
+
+    # Copper layers a padstack can vary across. F/In1/B is enough: a pad is
+    # either uniform or front/inner/back, and these cover every surface the
+    # exported model can show.
+    CU = (pcbnew.F_Cu, pcbnew.In1_Cu, pcbnew.B_Cu)
+
+    def pad_outside(pad):
+        return max(outside_area(pad.GetEffectivePolygon(l, pcbnew.ERROR_INSIDE))
+                   for l in CU)
+
     for fp in board.GetFootprints():
         for pad in list(fp.Pads()):
-            effective = pad.GetEffectivePolygon(L, pcbnew.ERROR_INSIDE)
+            if pad_outside(pad) > MIN_OUTSIDE_MM2:
+                # Do NOT edit the pad in place. Reshaping a pad that is already
+                # PAD_SHAPE_CUSTOM, or whose padstack is front/inner/back,
+                # SILENTLY leaves the original primitives behind and the pad
+                # keeps its full size. Rebuilding sidesteps every padstack rule:
+                # a fresh pad is uniform, unrotated and empty.
+                shape = pcbnew.SHAPE_POLY_SET()
+                for l in CU:
+                    shape.BooleanAdd(pad.GetEffectivePolygon(l, pcbnew.ERROR_INSIDE))
+                keep = pcbnew.SHAPE_POLY_SET(shape)
+                keep.BooleanIntersection(outline)
 
-            outside = pcbnew.SHAPE_POLY_SET(effective)
-            outside.BooleanSubtract(outline)
-            area = sum(abs(outside.Outline(i).Area())
-                       for i in range(outside.OutlineCount())) / 1e12
-            if area <= MIN_OUTSIDE_MM2:
-                continue
-
-            keep = pcbnew.SHAPE_POLY_SET(effective)
-            keep.BooleanIntersection(outline)
-            if keep.OutlineCount() == 0:
-                # Wholly past the edge: the router removes it, so should we.
+                layerset, net = pad.GetLayerSet(), pad.GetNetCode()
+                pos, number = pad.GetPosition(), pad.GetNumber()
                 fp.Delete(pad)
-                deleted += 1
+
+                if keep.OutlineCount() == 0:
+                    # Wholly past the edge: the router removes it, so do we.
+                    deleted += 1
+                    continue
+
+                # An outline with interior cutouts yields an intersection with
+                # holes, and a pad primitive cannot carry holes. Fracture folds
+                # them into one contour.
+                keep.Fracture()
+                new_pad = pcbnew.PAD(fp)
+                new_pad.SetNumber(number)
+                new_pad.SetAttribute(pcbnew.PAD_ATTRIB_SMD)
+                new_pad.SetLayerSet(layerset)
+                new_pad.SetPosition(pos)
+                new_pad.SetDrillSize(pcbnew.VECTOR2I(0, 0))
+                new_pad.SetShape(L, pcbnew.PAD_SHAPE_CUSTOM)
+                new_pad.SetAnchorPadShape(L, pcbnew.PAD_SHAPE_CIRCLE)
+                new_pad.SetSize(L, pcbnew.VECTOR2I(10000, 10000))
+                local = pcbnew.SHAPE_POLY_SET(keep)
+                local.Move(pcbnew.VECTOR2I(-pos.x, -pos.y))
+                for i in range(local.OutlineCount()):
+                    one = pcbnew.SHAPE_POLY_SET()
+                    one.AddOutline(local.Outline(i))
+                    new_pad.AddPrimitivePoly(L, one, 0, True)
+                new_pad.SetNetCode(net)
+                fp.Add(new_pad)
+                clipped += 1
                 continue
 
+            # Clipping the copper is not enough. A plated hole is exported as a
+            # barrel at the drill's own size and position, independent of the pad
+            # shape, so a castellated hole straddling the outline leaves a tube
+            # hanging in space. There is no way to export half a barrel, and the
+            # drill cannot be clipped, so drop it: a hole that is not fully inside
+            # the board is not a hole on the finished board.
+            dx, dy = pad.GetDrillSizeX(), pad.GetDrillSizeY()
+            if dx <= 0 and dy <= 0:
+                continue
+            hole = pcbnew.SHAPE_POLY_SET()
             pos = pad.GetPosition()
-            keep.Move(pcbnew.VECTOR2I(-pos.x, -pos.y))
-            pad.SetShape(L, pcbnew.PAD_SHAPE_CUSTOM)
-            pad.SetAnchorPadShape(L, pcbnew.PAD_SHAPE_CIRCLE)
-            pad.SetSize(L, pcbnew.VECTOR2I(10000, 10000))
-            pad.DeletePrimitivesList(L)
-            pad.AddPrimitivePoly(L, keep, 0, True)
-            clipped += 1
+            if dx == dy:
+                hole.NewOutline()
+                hole.Append(pos.x + dx // 2, pos.y)
+                for step in range(1, 32):
+                    a = 2 * math.pi * step / 32
+                    hole.Append(int(pos.x + dx / 2 * math.cos(a)),
+                                int(pos.y + dx / 2 * math.sin(a)))
+            else:
+                hole.NewOutline()
+                for sx, sy in ((-1, -1), (1, -1), (1, 1), (-1, 1)):
+                    hole.Append(int(pos.x + sx * dx / 2), int(pos.y + sy * dy / 2))
+            if outside_area(hole) > MIN_OUTSIDE_MM2:
+                pad.SetDrillSize(pcbnew.VECTOR2I(0, 0))
+                pad.SetAttribute(pcbnew.PAD_ATTRIB_SMD)
+                undrilled += 1
 
     board.Save(tmp)
-    return tmp, clipped, deleted
+    return tmp, clipped, deleted, undrilled
 
 
-def deopacify(step_path):
-    """Zero every transparency factor so nothing renders see-through."""
+def post_process(step_path, temp_stem, product):
+    """Zero transparency, and name the assembly after the product.
+
+    kicad-cli names every STEP product after the input filename, so exporting
+    from the clipped temp copy would ship products called
+    '.export_step_tmp_OpenFC_pad'. Rename them back.
+    """
     with open(step_path, encoding="utf8", errors="surrogateescape") as fh:
         text = fh.read()
-    text, n = re.subn(r"SURFACE_STYLE_TRANSPARENT\([^)]*\)",
-                      "SURFACE_STYLE_TRANSPARENT(0.)", text)
-    if n:
-        with open(step_path, "w", encoding="utf8", errors="surrogateescape") as fh:
-            fh.write(text)
-    return n
+    text = re.sub(r"SURFACE_STYLE_TRANSPARENT\([^)]*\)",
+                  "SURFACE_STYLE_TRANSPARENT(0.)", text)
+    if temp_stem:
+        text = text.replace(temp_stem, product)
+    with open(step_path, "w", encoding="utf8", errors="surrogateescape") as fh:
+        fh.write(text)
 
 
 def export(cli, board, out, preset, extra, dry_run, clip):
@@ -238,13 +324,19 @@ def export(cli, board, out, preset, extra, dry_run, clip):
     t0 = time.time()
     scratch = []
     note = ""
+    temp_stem = ""
     try:
         if clip:
-            src, nclip, ndel = clip_board_to_outline(board, scratch)
-            if nclip is None:
+            src, nclip, ndel, nhole = clip_board_to_outline(board, scratch)
+            if scratch:
+                temp_stem = os.path.basename(scratch[0])
+            if nclip == "no-outline":
+                note = "  WARNING: board has no closed Edge.Cuts outline, nothing clipped"
+            elif nclip is None:
                 note = "  (clip skipped: pcbnew unavailable — run with KiCad's Python)"
-            elif nclip or ndel:
-                note = f"  (clipped {nclip} pad(s), removed {ndel} fully outside the outline)"
+            elif nclip or ndel or nhole:
+                note = (f"  (clipped {nclip} pad(s), removed {ndel} outside, "
+                        f"dropped {nhole} straddling hole(s))")
             cmd[-1] = src
         result = subprocess.run(cmd, capture_output=True, text=True)
     finally:
@@ -258,7 +350,7 @@ def export(cli, board, out, preset, extra, dry_run, clip):
         print(f"  FAIL rc={result.returncode}  {tail}")
         return False
 
-    deopacify(out)
+    post_process(out, temp_stem, os.path.splitext(os.path.basename(out))[0])
     print(f"  {human(os.path.getsize(out)):>9}  {dt:5.1f}s  {out}{note}")
 
     # kicad-cli reports an unresolvable 3D model as a warning and still exits 0,

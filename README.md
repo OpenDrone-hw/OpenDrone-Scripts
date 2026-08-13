@@ -62,8 +62,13 @@ each measured rather than assumed:
 - **Copper past Edge.Cuts removed.** Edge pads are drawn beyond the outline on
   purpose so the fab plates and routes through them, but the router cuts that
   copper away on the finished board. kicad-cli exports the uncut pad, leaving
-  tabs hanging in space. Partly-outside pads are clipped to the outline and
-  wholly-outside ones deleted. `--no-clip` disables it.
+  tabs hanging in space, plus a plated barrel at every straddling drill.
+  Any pad with copper outside is rebuilt from scratch as a drill-free SMD pad
+  carrying the clipped shape. Editing pads in place does not work: an already
+  custom pad, or a front/inner/back padstack, silently keeps its original size.
+  Verified across all 16 boards with a closed outline: zero pads and zero holes
+  past Edge.Cuts. Component 3D models are not clipped, that needs a CAD kernel.
+  `--no-clip` disables it.
 
 Clipping happens on a temp copy beside the source board (not in `/tmp`, or
 `${KIPRJMOD}` breaks). The source `.kicad_pcb` is never written and KiCad may
