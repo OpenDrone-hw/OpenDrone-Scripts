@@ -39,6 +39,27 @@ One board revision is one tag and one GitHub release per repo. The order below
 is a gate chain: nothing downstream is worth generating until the design checks
 pass, because every artifact after step 2 is derived from the board files.
 
+An agent can run most of this unattended. The column says which:
+
+| | Step | Who |
+|---|---|---|
+| 0 | Rev number and scope | Stan |
+| 1 | ERC, DRC, parity, 3D model preflight | agent, new violation types to Stan |
+| 2 | Revision strings | agent, except the silkscreen |
+| 3 | JLCPCB fab set | agent |
+| 3b | Export checked against board and schematic | agent |
+| 4 | STEP set | agent |
+| 5 | Schematic PDFs | agent |
+| 6 | Renders | agent, **after Stan quits KiCad** |
+| 7 | Docs and firmware | agent drafts, Stan reads |
+| 8 | Tag, release, assets | agent, one go-ahead for the push |
+| 9 | Website and docs site | agent, one go-ahead for Shopify |
+
+**0. Scope.** Which boards carry the revision and what the number is. Not
+derivable from the files: the four FC and ESC repos tag independently of
+OpenRX, which has run a revision behind since rev2, and a revision that changes
+one board does not oblige the other seven.
+
 **1. Design gates.** All three must pass before anything is exported.
 
 ```bash
@@ -68,9 +89,11 @@ as `no pad found for pin A8`, and `lib_footprint_mismatch` is library drift that
 the board does not care about, since a `.kicad_pcb` embeds its own footprint
 copy.
 
-**2. Revision strings.** The rev number lives in four places and they are set
-by hand: `ARCHIVE_NAME` in the board's `fabrication-toolkit-options.json`, the
-silkscreen rev text if the board has one, the README status line, and the tag.
+**2. Revision strings.** The rev number lives in four places: `ARCHIVE_NAME` in
+the board's `fabrication-toolkit-options.json`, the silkscreen rev text if the
+board has one, the README status line, and the tag. Three of those are plain
+text files. The silkscreen is not: it means writing the `.kicad_pcb` through
+pcbnew, so it stays Stan's, and only OpenESC-20x20 carries one today.
 
 **3. JLCPCB fab set.** The Fabrication Toolkit is a GUI plugin, but it runs
 headless and its output is identical: on OpenRX-Lite the BOM, designator and
@@ -127,13 +150,23 @@ OpenRX has these today, in `exports/schematics/`, and they date from before the
 last two revisions.
 
 **6. Renders.** `render_board.py` into the repo's `images/`, KiCad closed. The
-commands are listed under that script below. READMEs reference the filenames
-directly, so re-rendering in place updates the docs, which is why the file name
-should not carry a rev number. Both FC repos still name theirs `-rev2-`.
+commands are listed under that script below. **This is the one step that stalls
+on a human**: the script writes the board through pcbnew and refuses while KiCad
+is open, and quitting KiCad is not an agent's call to make with a project open.
+Everything else in this list runs headless.
 
-**7. Docs.** README status line and export set name, `hardware/docs/DESIGN.md`
-against the current netlist, and any changelist items the revision closed.
-Verify against the design files, not against the other docs.
+READMEs reference the render filenames directly, so re-rendering in place
+updates the docs with no edit, which is why a filename should not carry a rev
+number. Both FC repos still name theirs `-rev2-`, and `OpenDrone-Docs`
+`build/*-groups.json` pins those same names as GitHub raw URLs, so renaming
+them is a two-repo change.
+
+**7. Docs and firmware.** README status line and export set name,
+`hardware/docs/DESIGN.md` against the current netlist, and any changelist items
+the revision closed. Verify against the design files, not against the other
+docs. Then confirm the committed firmware still matches the board: a revision
+that moves no GPIO net leaves the Betaflight uf2 and the AM32 target valid, and
+that is a netlist diff, not an assumption.
 
 **8. Tag and publish.** Tag `revN`, then attach the fab zip, the STEP set and
 the schematic PDFs to the release. Every release so far carries zero assets.
@@ -158,12 +191,30 @@ Then the product JSON in `content/products/`, the Shopify metafields, and
 `OpenDrone-Docs` (`build.py`, whose `build/*-groups.json` pin GitHub raw image
 URLs by filename, so a renamed render breaks the docs site silently).
 
-Every step above except 2 and 7 is a command or a short script; nothing here
-needs the GUI. What is missing is the wrapper that runs them in order and
-refuses to continue when a gate fails, and the export-freshness check that
-compares a `production/` set against the board it claims to come from. Both are
-worth writing before the next revision: `30x30-Rev3.zip` matches no committed
-state of that board, and nothing in the process was in a position to notice.
+### What no script can do
+
+Everything above is a command or a short script, with these exceptions. They
+are not tooling gaps, so do not try to route around them:
+
+- **Quitting KiCad.** Blocks step 6 and nothing else. Unsaved work is not an
+  agent's to gamble with.
+- **Any design change.** Nets, placement, routing, values, footprints, zone
+  refill saved back to the board. If a gate turns up something real, report and
+  stop.
+- **A DRC or ERC violation type nobody has judged yet.** The benign list in
+  step 1 is a record of past decisions, not a rule that generalises.
+- **OSHWA certification.** Each board carries a UID (BE000026, BE000029 and so
+  on) and the listing has a version field. Web form, per board, no API.
+- **The JLCPCB order.** Upload, DFM review, part substitution, quote, payment.
+  Stock for every line can be checked beforehand; the order cannot be placed.
+- **Bench validation and product photos.** A render is not a photo and an
+  export is not a working board.
+
+What is still missing on the tooling side is the wrapper that runs the steps in
+order and refuses to continue when a gate fails, and the export check of step 3b
+as a script rather than a habit. Both are worth writing before the next
+revision: `30x30-Rev3.zip` matches no committed state of that board, and nothing
+in the process was in a position to notice.
 
 ## `kicad/export_step.py` — standardized STEP exports
 
