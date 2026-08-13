@@ -229,7 +229,7 @@ def parse_nets(nets_section: Any) -> List[Dict[str, Any]]:
     return nets
 
 
-POWER_NET_RE = re.compile(r"^(\\+\\d|\\+\\d\\.\\d|\\+3\\.3V|\\+5V|VBAT|VCC|VDD|VDDA|AVDD|DVDD|IOVDD|VSS|GND|AGND|PGND|VUSB|VBUS|VREG|VREF)", re.IGNORECASE)
+POWER_NET_RE = re.compile(r"^(\+\d|\+\d\.\d|\+3\.3V|\+5V|VBAT|VCC|VDD|VDDA|AVDD|DVDD|IOVDD|VSS|GND|AGND|PGND|VUSB|VBUS|VREG|VREF)", re.IGNORECASE)
 
 
 def is_ic(ref: str) -> bool:
@@ -276,7 +276,7 @@ def main() -> int:
     with (outdir / "components.csv").open("w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
         w.writerow(["ref", "value", "footprint", "sheetname", "sheetfile", "lib", "part", "LCSC"])
-        for ref in sorted(comps.keys(), key=lambda r: (re.sub(r"\\D", "", r) or "0", r)):
+        for ref in sorted(comps.keys(), key=lambda r: (int(re.sub(r"\D", "", r) or 0), r)):
             c = comps[ref]
             w.writerow(
                 [

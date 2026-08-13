@@ -158,20 +158,20 @@ python3 kicad/dimension_overlay.py /tmp/front-raw.png images/front.png --width-m
 
 ## `kicad/openfc_netlist_extract.py`, `openfc_pcb_extract.py`, `openfc_connectivity_report.py`
 
-Netlist, placement and connectivity dumps. All three take the board or schematic
-as an argument. They keep an `OpenFC.kicad_pcb` default from when they lived in
-the OpenFC repos, and `openfc_pcb_extract.py` still has a Rev 1 refdes (`U36`)
-in one code path, so pass paths explicitly and check the output against the
-board you actually pointed them at.
+Netlist, placement and connectivity dumps. `openfc_netlist_extract.py` reads a
+`.net` (export one first with `kicad-cli sch export netlist`); the other two read
+a `.kicad_pcb` via `--pcb`. They layer: netlist provides the parser, pcb_extract
+adds `parse_board`, connectivity_report consumes it.
 
-## `kicad/add_mpn_fields.py` — populate MPN/LCSC symbol fields
+Verified net counts after the KiCad 10 fix below: OpenFC-Lite 110, OpenESC-30x30
+192, OpenRX-Gemini 100.
 
-Queries `jlcsearch.tscircuit.com` and writes MPN and LCSC fields back into
-schematic symbols. Takes the `.kicad_sch` as an argument.
-
-## `kicad/set_edgecuts_width.py` — normalize Edge.Cuts stroke width
-
-Fully argument-driven, no board assumptions.
+Known limits, all board-specific leftovers from the OpenFC repos: the `--pcb`
+default is `OpenFC.kicad_pcb`, `openfc_connectivity_report.py` hardcodes an
+OpenFC report title and a Rev 1 refdes (`Net-\(U36-USB_D[PM]\)`) that matches
+neither current board, and its default `--expand` list is OpenFC sheet names, so
+on another board large nets get truncated silently. Pass paths explicitly and
+check the output against the board you pointed at.
 
 ## `esc/esc_qc_gen.py` — ESC-QC fixture generator
 

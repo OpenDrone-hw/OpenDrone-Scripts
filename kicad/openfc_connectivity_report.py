@@ -9,11 +9,11 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
-_REPO_ROOT = Path(__file__).resolve().parent.parent
+_REPO_ROOT = Path(__file__).resolve().parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from tools.openfc_pcb_extract import parse_board  # type: ignore
+from openfc_pcb_extract import parse_board  # type: ignore
 
 
 def sheet_from_net(net: str) -> str:

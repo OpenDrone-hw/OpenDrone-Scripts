@@ -11,11 +11,11 @@ from typing import Any, Dict, List, Optional
 
 import sys
 
-_REPO_ROOT = Path(__file__).resolve().parent.parent
+_REPO_ROOT = Path(__file__).resolve().parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from tools.openfc_netlist_extract import ParseError, parse_sexpr, tokenize_sexpr  # type: ignore
+from openfc_netlist_extract import ParseError, parse_sexpr, tokenize_sexpr  # type: ignore
 
 
 @dataclass
@@ -102,10 +102,15 @@ def parse_board(board_path: Path) -> tuple[List[Footprint], Dict[str, str]]:
                 if not (isinstance(psub, list) and psub):
                     continue
                 if psub[0] == "net":
-                    # (net 115 "/RP2350A/XIN")
+                    # KiCad <=9: (net 115 "/RP2350A/XIN").
+                    # KiCad 10 dropped the numeric id: (net "/RP2350A/XIN").
+                    # Only matching the 3-token form left every net blank on
+                    # every KiCad 10 board while still exiting 0.
                     if len(psub) >= 3 and isinstance(psub[1], str) and isinstance(psub[2], str):
                         pad.net_id = psub[1]
                         pad.net_name = psub[2]
+                    elif len(psub) == 2 and isinstance(psub[1], str):
+                        pad.net_name = psub[1]
                 elif psub[0] == "pinfunction" and len(psub) >= 2 and isinstance(psub[1], str):
                     pad.pinfunction = psub[1]
                 elif psub[0] == "pintype" and len(psub) >= 2 and isinstance(psub[1], str):
