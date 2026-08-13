@@ -35,7 +35,6 @@ Dependencies: KiCad 9/10 (pcbnew + kicad-cli); rsvg-convert or ImageMagick
 (`magick`) only needed for --png.
 """
 import argparse
-import glob
 import gzip
 import math
 import os
@@ -618,8 +617,18 @@ def export_svg(cli, pcb, side, layers, out, drill):
     subprocess.run(cmd, check=True, capture_output=True)
 
 
+def _strip_title(s):
+    """kicad-cli writes <title>SVG Image created as X date 2026-..-..T..:..:..</title>.
+    Copying it through makes every regeneration a byte diff with identical
+    geometry, so the art can never be verified by checksum."""
+    return re.sub(r"<title>.*?</title>", "", s, flags=re.S)
+
+
 def svg_inner(path):
-    return re.search(r"<svg\b[^>]*>(.*)</svg>", open(path).read(), re.S).group(1)
+    m = re.search(r"<svg\b[^>]*>(.*)</svg>", open(path).read(), re.S)
+    if not m:
+        sys.exit(f"kicad-cli produced an SVG this script cannot read: {path}")
+    return _strip_title(m.group(1))
 
 
 def recolor(s, black_to, white_to=None):

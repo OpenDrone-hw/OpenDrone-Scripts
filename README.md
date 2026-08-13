@@ -122,13 +122,35 @@ colour cannot be overridden here; renders use the board's own mask colour.
 
 Single-colour gold-on-white vector art of a board's front/back for the black and
 gold retail packaging. Not a 3D render: it composites kicad-cli SVG plots (pads,
-silk and outline in gold, tracks/zones/vias/fab-text stripped) with every
-component drawn as its real silhouette. Component shapes come from the
-footprint's 3D model, with `.wrl` mesh triangles projected to the board plane
-and unioned via pcbnew's polygon engine, so concavity is preserved and vertical
-walls contribute their extents rather than collapsing to a top face. Parts
-without a model fall back through library Fab shape, then courtyard polygon,
-then pad-extent rectangle.
+silk and outline in gold, tracks/zones/vias/fab-text stripped) with each
+component drawn as a silhouette derived from its 3D model.
+
+**This tool has never produced a committed artifact.** One commit, never modified
+since. Treat its output as unverified and check it before sending anything to
+print. Measured across 2588 footprints on 17 boards:
+
+| silhouette source | share |
+|---|---|
+| `.wrl` mesh, concavity preserved | **7.6%** |
+| convex hull of STEP vertices | 66.0% |
+| courtyard polygon | 6.6% |
+| library Fab shape | 1.4% |
+| pad-extent rectangle | 5.5% |
+| nothing drawn | 5.7% |
+| skipped (bare pads) | 7.3% |
+
+The mesh path needs a `.wrl`, and KiCad 10's bundled library ships 7236 `.step`
+and zero `.wrl`, so stock footprints can never reach it. A convex hull destroys
+concavity by construction: a USB-C shell measures 7.6x its true silhouette area
+(40.18x25.25 mm against 11.36x7.62 mm), and a SOT-23-6 on the 30x30 ESC draws
+0.94 mm too wide on a 2.9 mm part, inside the courtyard slack so nothing warns.
+
+Known defects, none fixed: a board with no Edge.Cuts loses **every** silhouette
+silently (the size guards derive from a zero-size bbox); `have3d` is keyed by
+reference, so on `4in1-panel` 12 footprints lose their body to a same-ref twin
+elsewhere on the panel; interior cutouts are not clipped, so on `4in1-panel` 30
+coordinate pairs land inside routed slots; unresolved 3D models are never
+reported.
 
 ```bash
 $KPY kicad/packaging_art.py <board.kicad_pcb> --outdir packaging/ --png
@@ -140,11 +162,16 @@ Key flags: `--top/--bottom` SVG outputs · `--sides` · `--color '#C9A227'` ·
 `--png --png-size 1600 --png-bg white|black|transparent`.
 
 The source board is never touched (all edits happen on temp copies), so KiCad
-can stay open. The bottom side is plotted with `--mirror`. Implementation note:
-two 0.005 mm calibration dots are planted 5 mm outside the board bbox on every
-plotted layer, because kicad-cli's SVG page origin is content-dependent and the
-dots pin an exact mm-to-SVG mapping for the clip path. They are clipped out of
-the final art.
+can stay open. This is the one safety claim that was verified: 17 boards x 2
+sides plus ~30 runs left every project file byte-identical with no sidecars.
+
+The bottom side is plotted with `--mirror`. Implementation note: two 0.005 mm
+calibration dots are planted 5 mm outside the board bbox on every plotted layer,
+because kicad-cli's SVG page origin is content-dependent and the dots pin an
+exact mm-to-SVG mapping for the clip path. **They are not removed**, only hidden
+behind the clip group, so with `--no-clip` or on a board with no outline they are
+visible and they set the page: OpenRX-Lite plots 20.29 x 24.08 mm for a
+10.05 x 11.55 mm board.
 
 ## `kicad/dimension_overlay.py` — dimensioned README image
 
