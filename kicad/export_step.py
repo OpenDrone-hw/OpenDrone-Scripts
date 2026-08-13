@@ -14,46 +14,49 @@ Repo root, not next to the .kicad_pcb — board files live at different depths p
 repo (OpenRX/OpenRX-Lite/, OpenFC-Lite/hardware/), so anchoring to the board
 would scatter the output. One directory per repo, always at the top.
 
-THE STANDARD EXPORT IS: board body + components + pads + silkscreen.
-Each decision below was measured, not assumed:
+THE STANDARD EXPORT IS: board body + components + pads + silkscreen, plus
+copper that a mask opening leaves bare. Each decision below is measured:
 
-  Soldermask is EXCLUDED. kicad-cli does NOT model mask apertures: exporting
-  F.Mask + B.Mask for a whole board yields 3 ADVANCED_FACEs, i.e. two flat
-  sheets with no openings cut in them. Including it therefore buries every pad
-  under an unbroken green slab. It is also stamped with a 17% transparency
-  factor (silkscreen gets 10%), which is what made earlier exports look like
-  frosted glass. The board body is already opaque green, so leaving the mask
-  out is both more correct and smaller.
+  Soldermask is EXCLUDED. kicad-cli models no mask apertures: exporting F.Mask +
+  B.Mask for a whole board adds only 2-3 ADVANCED_FACEs over a body-only export,
+  i.e. flat sheets with no openings cut. Including it buries every pad under an
+  unbroken slab. It also carries a 17% transparency factor (silkscreen 10%),
+  which made earlier exports look like frosted glass.
 
-  KNOWN LIMITATION from the same cause: graphics drawn on F.Mask/B.Mask (logos,
-  lettering) are mask openings that expose bare copper on the real board. Since
-  kicad-cli emits no apertures, that copper cannot be shown by any combination
-  of flags. Rendering it would mean synthesising the exposed-copper regions
-  (mask graphics INTERSECT copper) as geometry, which this script does not yet do.
+  Mask GRAPHICS are recovered instead. Logos and lettering drawn on F.Mask or
+  B.Mask are openings that expose bare copper on the real board. Since kicad-cli
+  emits no apertures, the exposed regions are synthesised: a mask layer rendered
+  to polygons IS the openings, a copper layer rendered to polygons is the copper,
+  and the intersection is the bare metal. See add_mask_exposed_copper.
 
-  Tracks and zones are EXCLUDED. Copper spans z 0.91-0.945 mm on a 1.0 mm
-  board, under the mask on a real board, so it is invisible from outside.
-  Including it roughly doubles the file for geometry nobody can see.
+  Tracks and zones are EXCLUDED, for FILE SIZE, not visibility. Including them
+  measures 1.53x on OpenRX-Lite and 1.79x on OpenFC-Lite. Do not repeat the older
+  claim that they are hidden under the mask: the mask is excluded here, so that
+  copper would sit about 35 um proud of the board and would be plainly visible,
+  exactly as the pads are.
 
-  Everything past Edge.Cuts is CUT (--clip, on by default). Any pad with copper
-  outside the outline is REBUILT, not edited: intersect its copper with the
-  outline, delete the pad, and add a fresh SMD pad carrying the result. Editing
-  in place looks like it works and does not. A pad that is already
-  PAD_SHAPE_CUSTOM, or whose padstack is front/inner/back, keeps its original
-  primitives and stays full size, with no error raised. A rebuilt pad is
-  uniform, unrotated, drill-free and empty, so none of those rules apply.
-  Dropping the drill matters on its own: plated holes export as barrels at the
-  drill's position and size regardless of pad shape, so a castellated hole on
-  the outline used to leave a tube hanging in space.
+  Everything past Edge.Cuts is CUT (--clip, on by default), in two passes:
+    1. A drill that straddles the outline is a castellation. The hole is
+       subtracted FROM the outline so the board body carries the notch, as the
+       KiCad 3D viewer draws it, and only then is the drill zeroed so no barrel
+       is left floating. Zeroing the drill without notching loses the notch;
+       setting the pad to SMD as well collapses it to one copper layer and loses
+       all the back-side copper.
+    2. Any pad with copper outside is REBUILT, not reshaped: intersect with the
+       outline, delete, and add fresh SMD pads, one per copper side. Reshaping in
+       place fails silently when the pad is already PAD_SHAPE_CUSTOM or its
+       padstack is front/inner/back.
 
-  Verified across all 16 boards that have a closed outline: zero pads and zero
-  holes with geometry past Edge.Cuts. Component 3D models are NOT clipped, that
-  needs a CAD kernel which is not available here, so a connector body that
-  genuinely overhangs will still overhang.
+  Scope of the cut, honestly: gross overhang is gone on every board (OpenRX-Lite
+  went from 648 pad points up to 2.25 mm outside, to none). The 30x30 panel still
+  retains about 120 pad points up to 4.6 um outside, from MIN_OUTSIDE_MM2 and
+  polygonisation error. Silkscreen is NOT clipped and can overhang. Component 3D
+  models are NOT clipped: that needs a CAD kernel, which is not available here.
 
-Any leftover transparency is zeroed in the written STEP so nothing renders
-see-through, and product names are rewritten from the temp filename back to the
-product name.
+Transparency is zeroed in the written STEP, the export timestamp is normalised,
+and product names are rewritten to the product. The file is still not
+byte-reproducible: kicad-cli emits STYLED_ITEM records in a nondeterministic
+order, and rebuilt pads carry random UUIDs that perturb coordinates by ~0.3 um.
 
 --preset exists only as an escape hatch for copper inspection work, and its
 output does not belong in a repo:
@@ -161,10 +164,22 @@ def discover(root, only_repo=None):
 
 
 def find_kicad_cli(explicit):
-    for c in (explicit, DEFAULT_KICAD_CLI, shutil.which("kicad-cli")):
+    """Locate kicad-cli. Validates an explicit path instead of trusting it, and
+    derives the path from the running interpreter so a non-default KiCad install
+    works. The two earlier copies each got one half of this right."""
+    if explicit:
+        if os.path.exists(explicit):
+            return explicit
+        sys.exit(f"--kicad-cli path does not exist: {explicit}")
+    here = sys.executable
+    if "KiCad.app" in here:
+        base = here.split("KiCad.app")[0] + "KiCad.app/Contents/MacOS/kicad-cli"
+        if os.path.exists(base):
+            return base
+    for c in (DEFAULT_KICAD_CLI, shutil.which("kicad-cli")):
         if c and os.path.exists(c):
             return c
-    sys.exit("kicad-cli not found — pass --kicad-cli PATH")
+    sys.exit("kicad-cli not found - pass --kicad-cli PATH")
 
 
 def human(n):
@@ -254,16 +269,25 @@ def clip_board_to_outline(board_path, scratch):
             pad.SetDrillSize(pcbnew.VECTOR2I(0, 0))
             notched += 1
 
-        # Rewrite Edge.Cuts to the notched outline. Board-level and
-        # footprint-level edge graphics both have to go, or the old straight
-        # edge survives alongside the new one.
+        # Rewrite Edge.Cuts to the notched outline. The old edge graphics, both
+        # board-level and inside footprints, have to stop defining the outline or
+        # the original straight edge survives alongside the notched one.
+        #
+        # They are MOVED to Cmts.User, not removed. board.Remove() hands
+        # ownership to Python without taking it, which corrupts the SWIG proxies:
+        # every later GetFootprints() then yields raw SwigPyObject and the next
+        # attribute access dies with "'SwigPyObject' object is not iterable".
+        # That crashed the two boards with the most edge graphics, OpenESC-30x30
+        # 4in1 (141 items) and OpenRX-all (54), and took the rest of the --all
+        # batch down with them. Cmts.User is not in any export preset, so the
+        # moved graphics are inert.
         for d in list(board.GetDrawings()):
             if d.GetLayer() == pcbnew.Edge_Cuts:
-                board.Remove(d)
+                d.SetLayer(pcbnew.Cmts_User)
         for fp in board.GetFootprints():
             for g in list(fp.GraphicalItems()):
                 if g.GetLayer() == pcbnew.Edge_Cuts:
-                    fp.Remove(g)
+                    g.SetLayer(pcbnew.Cmts_User)
         for i in range(outline.OutlineCount()):
             contours = [outline.Outline(i)]
             contours += [outline.Hole(i, h) for h in range(outline.HoleCount(i))]
@@ -343,7 +367,10 @@ def clip_board_to_outline(board_path, scratch):
 
     exposed = add_mask_exposed_copper(board, outline, pcbnew)
 
-    board.Save(tmp)
+    # Save returns False on failure rather than raising. Ignoring it would export
+    # the UNCLIPPED board while printing clipped-pad counts.
+    if not board.Save(tmp):
+        sys.exit(f"pcbnew could not write {tmp}")
     return tmp, clipped, deleted, notched, exposed
 
 
@@ -424,6 +451,13 @@ def post_process(step_path, temp_stem, product):
         text = fh.read()
     text = re.sub(r"SURFACE_STYLE_TRANSPARENT\([^)]*\)",
                   "SURFACE_STYLE_TRANSPARENT(0.)", text)
+    # kicad-cli stamps the export time into FILE_NAME, so two exports of an
+    # unchanged board never compare equal. Both sibling scripts strip their
+    # equivalent. Note this does NOT make the file fully reproducible: kicad-cli
+    # also emits STYLED_ITEM records in a nondeterministic order, which is not
+    # fixable from here.
+    text = re.sub(r"(FILE_NAME\('[^']*',')[^']*(')", r"\g<1>1970-01-01T00:00:00\g<2>",
+                  text, count=1)
     if temp_stem:
         text = text.replace(temp_stem, product)
     with open(step_path, "w", encoding="utf8", errors="surrogateescape") as fh:
@@ -477,7 +511,8 @@ def export(cli, board, out, preset, extra, dry_run, clip):
         print(f"  FAIL rc={result.returncode}  {tail}")
         return False
 
-    post_process(out, temp_stem, os.path.splitext(os.path.basename(out))[0])
+    post_process(out, temp_stem or os.path.splitext(os.path.basename(board))[0],
+                 os.path.splitext(os.path.basename(out))[0])
     print(f"  {human(os.path.getsize(out)):>9}  {dt:5.1f}s  {out}{note}")
 
     # kicad-cli reports an unresolvable 3D model as a warning and still exits 0,

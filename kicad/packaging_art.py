@@ -52,17 +52,22 @@ FAB_LAYERS = {"top": "F.Fab", "bottom": "B.Fab"}
 
 
 def find_kicad_cli(explicit):
+    """Locate kicad-cli. Validates an explicit path instead of trusting it, and
+    derives the path from the running interpreter so a non-default KiCad install
+    works. The two earlier copies each got one half of this right."""
     if explicit:
-        return explicit
+        if os.path.exists(explicit):
+            return explicit
+        sys.exit(f"--kicad-cli path does not exist: {explicit}")
     here = sys.executable
     if "KiCad.app" in here:
-        c = here.split("KiCad.app")[0] + "KiCad.app/Contents/MacOS/kicad-cli"
-        if os.path.exists(c):
-            return c
+        base = here.split("KiCad.app")[0] + "KiCad.app/Contents/MacOS/kicad-cli"
+        if os.path.exists(base):
+            return base
     for c in (DEFAULT_KICAD_CLI, shutil.which("kicad-cli")):
         if c and os.path.exists(c):
             return c
-    sys.exit("kicad-cli not found — pass --kicad-cli PATH")
+    sys.exit("kicad-cli not found - pass --kicad-cli PATH")
 
 
 def import_pcbnew():
