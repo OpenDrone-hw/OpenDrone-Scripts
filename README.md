@@ -33,6 +33,138 @@ $KPY ~/OpenDrone/software/OpenDrone-Scripts/kicad/export_step.py --all
 
 ---
 
+## Release procedure
+
+One board revision is one tag and one GitHub release per repo. The order below
+is a gate chain: nothing downstream is worth generating until the design checks
+pass, because every artifact after step 2 is derived from the board files.
+
+**1. Design gates.** All three must pass before anything is exported.
+
+```bash
+KC=/Applications/KiCad/KiCad.app/Contents/MacOS/kicad-cli
+$KC sch erc --severity-error --severity-warning --exit-code-violations board.kicad_sch
+$KC pcb drc --schematic-parity --refill-zones --severity-error --severity-warning \
+            --exit-code-violations board.kicad_pcb
+$KPY kicad/check_models.py --all --products --blocking-only
+```
+
+DRC with `--schematic-parity` is the check that matters most here, because it is
+the one that catches a footprint pasted straight onto the board: it reports
+`extra_footprint` for a part the schematic does not have and
+`duplicate_footprints` when two carry the same reference. The Fabrication
+Toolkit reads the board, not the schematic, so those parts do get fabbed and
+placed, duplicates under a `C6_2`, `C6_3` suffix. The cost is that the schematic
+stops being the BOM, the fab set carries designators that exist nowhere else,
+and one update-from-schematic deletes the lot. Both ESC boards carry PCB-only
+bulk caps of exactly this kind, 89 parity items on the 30x30, which is enough
+noise to hide a real parity error.
+
+Pass `--refill-zones` or stale fills invent clearance errors: it drops
+OpenFC-Lite-Mini from six errors to three. It does not write the board unless
+`--save-board` is given too. Some violations are benign and get waived by hand:
+multi-pad test-point footprints report as shorting nets, USB-C shell pins report
+as `no pad found for pin A8`, and `lib_footprint_mismatch` is library drift that
+the board does not care about, since a `.kicad_pcb` embeds its own footprint
+copy.
+
+**2. Revision strings.** The rev number lives in four places and they are set
+by hand: `ARCHIVE_NAME` in the board's `fabrication-toolkit-options.json`, the
+silkscreen rev text if the board has one, the README status line, and the tag.
+
+**3. JLCPCB fab set.** The Fabrication Toolkit is a GUI plugin, but it runs
+headless and its output is identical: on OpenRX-Lite the BOM, designator and
+position CSVs come out byte-identical to the committed GUI export, and the
+gerber zip differs only in the `TF.CreationDate` line of each file. Output lands
+in `<board dir>/production/`, which is gitignored in every repo.
+
+Two things stop the plugin's own `cli.py` from working, and both are worked
+around from outside it. Its package directory name contains hyphens, so it
+cannot be imported as a module and has to be copied or symlinked to a legal
+name. Then it reaches into wx and `pcbnew.GetBoard()` even in CLI mode, which is
+`None` outside the editor and takes down the archive-naming step after the CSVs
+are already written:
+
+```python
+import wx; app = wx.App(False)
+import pcbnew
+from jlc_plugin.thread import ProcessThread
+from jlc_plugin.options import *
+board = pcbnew.LoadBoard(path)
+pcbnew.GetBoard = lambda *a, **k: board
+ProcessThread(wx=None, cli=path, nonInteractive=True, openBrowser=False,
+              options={ARCHIVE_NAME: 'Rev3.1', AUTO_TRANSLATE_OPT: True,
+                       AUTO_FILL_OPT: True, NO_BACKUP_OPT: True, ...}).join()
+```
+
+**3b. Check the export against the design. Every time.** The plugin is a third
+party tool with its own translation table and its own naming rules, the export
+is the one artifact the fab actually builds from, and a stale or wrong set looks
+exactly like a good one. Three comparisons, all mechanical:
+
+- **Designators against the board.** `*_designators.csv` must equal the board's
+  footprints minus `exclude_from_bom`, counts included. `30x30-Rev3.zip` fails
+  this against every committed state of that board: it carries the input TVS
+  that rev3 deleted, and no C6 where the board of the day had three.
+- **Designators against the schematic.** Anything in the export that the
+  netlist does not have is a board-only part. That is allowed, but it has to be
+  a decision, not a surprise, and `_2` suffixed refs are the tell.
+- **Per-part quantity against the netlist.** Group the BOM rows by LCSC number
+  and compare with the same grouping over the schematic. This is what catches a
+  part silently missing its LCSC field, since those rows do not fail any of the
+  other checks, they just quietly do not get placed.
+
+Also eyeball the positions file for rotation and side: the toolkit applies its
+own `transformations.csv` per footprint, and a package it does not know keeps
+KiCad's rotation, which is how a part arrives on the board turned 90 degrees
+with a perfectly clean BOM.
+
+**4. STEP set.** `check_models.py` then `export_step.py`, clearing `export/`
+first. See "Publishing a fit-check set" below.
+
+**5. Schematic PDFs.** `$KC sch export pdf -o <out.pdf> board.kicad_sch`. Only
+OpenRX has these today, in `exports/schematics/`, and they date from before the
+last two revisions.
+
+**6. Renders.** `render_board.py` into the repo's `images/`, KiCad closed. The
+commands are listed under that script below. READMEs reference the filenames
+directly, so re-rendering in place updates the docs, which is why the file name
+should not carry a rev number. Both FC repos still name theirs `-rev2-`.
+
+**7. Docs.** README status line and export set name, `hardware/docs/DESIGN.md`
+against the current netlist, and any changelist items the revision closed.
+Verify against the design files, not against the other docs.
+
+**8. Tag and publish.** Tag `revN`, then attach the fab zip, the STEP set and
+the schematic PDFs to the release. Every release so far carries zero assets.
+
+```bash
+gh release create rev3.1 --title "OpenX Rev 3.1" --notes-file notes.md
+gh release upload rev3.1 export/*.step hardware/production/<Rev>.zip
+```
+
+**9. Website and docs site.** `OpenDrone-Web` regenerates from the board files
+through `scripts/boards.config.json`, which maps a product handle to a
+`.kicad_pcb` absolute path:
+
+```bash
+cd ~/OpenDrone/software/OpenDrone-Web
+npm run gen:board-art     # public/boards/<handle>/{front,back}.png, board.svg
+npm run gen:components    # public/boards/<handle>/components.json
+npm run gen:schematics    # public/schematics/<handle>/*.svg + manifest.json
+```
+
+Then the product JSON in `content/products/`, the Shopify metafields, and
+`OpenDrone-Docs` (`build.py`, whose `build/*-groups.json` pin GitHub raw image
+URLs by filename, so a renamed render breaks the docs site silently).
+
+Every step above except 2 and 7 is a command or a short script; nothing here
+needs the GUI. What is missing is the wrapper that runs them in order and
+refuses to continue when a gate fails, and the export-freshness check that
+compares a `production/` set against the board it claims to come from. Both are
+worth writing before the next revision: `30x30-Rev3.zip` matches no committed
+state of that board, and nothing in the process was in a position to notice.
+
 ## `kicad/export_step.py` — standardized STEP exports
 
 One command exports every board in every repo to `<repo>/export/<Product>.step`:
