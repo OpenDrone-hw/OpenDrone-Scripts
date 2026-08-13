@@ -372,9 +372,18 @@ def export(cli, board, out, preset, extra, dry_run, clip):
             cmd[-1] = src
         result = subprocess.run(cmd, capture_output=True, text=True)
     finally:
+        # KiCad writes a lock file as ~<basename>.lck, i.e. a TILDE-PREFIXED
+        # sibling that the stem glob never matches. Sweep both patterns or the
+        # locks accumulate inside the repo.
         for stem_path in scratch:
-            for f in glob.glob(glob.escape(stem_path) + ".*"):
-                os.remove(f)
+            d, base = os.path.dirname(stem_path), os.path.basename(stem_path)
+            for pattern in (glob.escape(stem_path) + ".*",
+                            os.path.join(d, "~" + glob.escape(base) + ".*")):
+                for f in glob.glob(pattern):
+                    try:
+                        os.remove(f)
+                    except OSError:
+                        pass
 
     dt = time.time() - t0
     if result.returncode != 0 or not os.path.exists(out):

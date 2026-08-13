@@ -1,7 +1,11 @@
 # OpenDrone-Scripts
 
-Tooling shared across the OpenDrone hardware repos. Anything here works on *any*
-board passed to it. Board-specific scripts stay in their board repo.
+Tooling shared across the OpenDrone hardware repos. Everything here spans more
+than one repo. Scripts that only ever serve a single repo stay in that repo.
+
+`kicad/` is board-agnostic: give it any `.kicad_pcb`. `esc/` is board-*family*
+tooling: it works on any OpenESC, not on any board, and it lives here because it
+reads a board in one repo and writes into another.
 
 Before this repo existed these scripts lived in an unversioned `software/tools/`
 directory, and the generic KiCad helpers were duplicated byte-for-byte between
@@ -188,7 +192,17 @@ Emits `<dut>-negative.kicad_mod` plus local `TP_Pad_*` lands, and places the
 negative and all 44 edge pads (F.Cu and B.Cu). **Nothing is routed.** Edge pad
 positions are lifted from the 20x20 board and stay put, since the fixture is
 100 x 100 for every ESC. The pocket is derived from the ESC's own pads and
-reproduces the 20x20 pocket to within 0.05 mm.
+reproduces the 20x20 pocket to 0.051 mm worst case (Y edges; X edges 0.003 mm).
+
+Regenerating reproduces the committed 30x30 fixture exactly: all 34 contact pads
+and all 44 edge pads land within 0.000000 mm, and the negative footprint is
+byte-identical once UUIDs are stripped.
+
+**Footgun:** the script writes `<dut>-negative.kicad_mod` (hyphen) but the
+30x30 board references `4in1ESC30x30_negative` (underscore, a hand-rename).
+Re-running overwrites the unused hyphen file and silently leaves the board
+alone, which is the opposite of the "regeneration destroys routing" warning.
+Reconcile the names before trusting a regeneration.
 
 ## `esc/esc_jig_retarget.py` — move an existing jig to another ESC
 
@@ -208,11 +222,6 @@ Pins are matched by net name, so the template's naming drives placement:
 schematic sheets, not from position. `--strip-tracks` clears the old routing,
 `--swap-outline R` replaces silkscreen graphics within R mm of the jig centre
 with the target ESC's outline, `--retext` fixes silk labels.
-
-## `esc/esc_fixture_gen.py`
-
-Earlier fixture generator, superseded in practice by `esc_qc_gen.py`. Kept
-because it is the only thing that produced the original fixture geometry.
 
 ---
 
