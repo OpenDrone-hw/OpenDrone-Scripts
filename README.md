@@ -127,6 +127,7 @@ is worse than no model at all.
 
 ```bash
 $KPY kicad/check_models.py --all --products
+$KPY kicad/check_models.py --all --products --blocking-only   # release gate
 $KPY kicad/check_models.py <board.kicad_pcb> -v
 ```
 
@@ -178,12 +179,17 @@ were built from, not as tracked files. `export/` stays gitignored.
 Build the set, then attach it to that repo's rev release:
 
 ```bash
-$KPY kicad/check_models.py --all --products --repo OpenRX     # must be E3/E4 clean
-rm -rf ~/OpenDrone/hardware/OpenRX/export                     # see below
-$KPY kicad/export_step.py  --all --products --repo OpenRX
-gh release upload rev3.1 ~/OpenDrone/hardware/OpenRX/export/*.step \
-   -R OpenDrone-hw/OpenRX
+$KPY kicad/check_models.py --all --products --repo OpenRX --blocking-only && {
+  rm -rf ~/OpenDrone/hardware/OpenRX/export                   # see below
+  $KPY kicad/export_step.py --all --products --repo OpenRX
+  gh release upload rev3.1 ~/OpenDrone/hardware/OpenRX/export/*.step \
+     -R OpenDrone-hw/OpenRX
+}
 ```
+
+`--blocking-only` is what makes that chain usable: without it the check exits
+non-zero on E1/E2/E5 too, and every FC and ESC board reports drift that has no
+effect on the export, so the gate would never open.
 
 **Clear `export/` first.** `--products` only decides what gets *written*; it
 never removes what an earlier `--all` run left behind. A plain `--all` puts

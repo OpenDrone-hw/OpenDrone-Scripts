@@ -32,7 +32,13 @@ Needs pcbnew, so run with KiCad's bundled Python:
   $KPY check_models.py --all
   $KPY check_models.py <board.kicad_pcb> -v
 
-Exits non-zero if anything is found. Read-only: no board or library is written.
+Exits non-zero if anything is found, or with --blocking-only, only when E3/E4 is
+found. That distinction matters because E1, E2 and E5 do not affect the exported
+STEP at all: a .kicad_pcb carries its own copy of every footprint, models
+included, and that copy is what kicad-cli exports. Gating a release build on the
+full set would block on cosmetic library drift.
+
+Read-only: no board or library is written.
 """
 import argparse
 import os
@@ -189,6 +195,9 @@ def main():
                         "(matches export_step.py --products)")
     p.add_argument("--root", default=ROOT)
     p.add_argument("-v", "--verbose", action="store_true", help="list every finding")
+    p.add_argument("--blocking-only", action="store_true",
+                   help="exit non-zero only for E3/E4, the errors that actually "
+                        "empty the export; use this to gate a release build")
     a = p.parse_args()
 
     try:
@@ -205,6 +214,7 @@ def main():
 
     total = {k: 0 for k in ("E1", "E2", "E3", "E4", "E5")}
     failing = 0
+    blocking = 0
     print(f"{'BOARD':<34} {'E1':>4} {'E2':>4} {'E3':>4} {'E4':>4} {'E5':>4}")
     print("-" * 60)
     for name, board_path in jobs:
@@ -213,17 +223,25 @@ def main():
             total[k] += counts[k]
         bad = sum(counts.values())
         failing += bool(bad)
+        blocks = counts["E3"] + counts["E4"]
+        blocking += bool(blocks)
+        note = "   clean" if not bad else ("   BLOCKS EXPORT" if blocks else "")
         print(f"{name:<34} {counts['E1']:>4} {counts['E2']:>4} {counts['E3']:>4} "
-              f"{counts['E4']:>4} {counts['E5']:>4}" + ("" if bad else "   clean"))
+              f"{counts['E4']:>4} {counts['E5']:>4}{note}")
         if a.verbose:
             for line in detail:
                 print("    " + line)
     print("-" * 60)
     print(f"{'TOTAL':<34} {total['E1']:>4} {total['E2']:>4} {total['E3']:>4} "
-          f"{total['E4']:>4} {total['E5']:>4}   {failing}/{len(jobs)} boards failing")
+          f"{total['E4']:>4} {total['E5']:>4}   {failing}/{len(jobs)} with findings, "
+          f"{blocking}/{len(jobs)} blocking")
     print("\nE1 nickname unresolvable · E2 footprint gone from library · "
           "E3 model file missing\nE4 board lost a model · E5 board/library drift "
           "(a library-only fix cannot reach these)")
+    print("E3 and E4 empty the export. E1, E2 and E5 do not: the board carries "
+          "its own\nfootprint copies, and those are what kicad-cli exports.")
+    if a.blocking_only:
+        return 1 if blocking else 0
     return 1 if failing else 0
 
 
