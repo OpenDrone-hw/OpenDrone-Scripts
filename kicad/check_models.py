@@ -145,7 +145,7 @@ def main():
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("board", nargs="?", help="path to a .kicad_pcb")
     p.add_argument("--all", action="store_true", help="check every discovered board")
-    p.add_argument("--repo", help="with --all, limit to one repo")
+    p.add_argument("--repo", help="with --all, limit to these repos (comma separated)")
     p.add_argument("--root", default=ROOT)
     p.add_argument("-v", "--verbose", action="store_true", help="list every finding")
     a = p.parse_args()

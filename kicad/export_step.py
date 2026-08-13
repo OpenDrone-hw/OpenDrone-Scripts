@@ -143,11 +143,12 @@ def product_name(repo, stem):
 def discover(root, only_repo=None):
     """Yield (repo, board_path, product_name) for every project board found."""
     found = []
+    wanted = {r.strip() for r in only_repo.split(",")} if only_repo else None
     for repo in sorted(os.listdir(root)):
         repo_dir = os.path.join(root, repo)
         if not os.path.isdir(repo_dir) or repo.startswith("."):
             continue
-        if only_repo and repo != only_repo:
+        if wanted and repo not in wanted:
             continue
         for dirpath, dirnames, filenames in os.walk(repo_dir):
             dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS and not d.endswith(".pretty")]
@@ -536,7 +537,7 @@ def main():
     p.add_argument("board", nargs="?", help="path to a .kicad_pcb")
     p.add_argument("-o", "--output", help="output .step (single-board mode)")
     p.add_argument("--all", action="store_true", help="export every board in the manifest")
-    p.add_argument("--repo", help="with --all, limit to one repo")
+    p.add_argument("--repo", help="with --all, limit to these repos (comma separated)")
     p.add_argument("--preset", default="standard", choices=sorted(PRESETS),
                    help="escape hatch only; the repo standard is 'standard'")
     p.add_argument("--no-clip", dest="clip", action="store_false",
