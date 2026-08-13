@@ -65,7 +65,7 @@ Clipping needs pcbnew, so run with KiCad's bundled Python, same as
 render_board.py. Without it the export still runs, unclipped, with a warning:
 
   KPY=/Applications/KiCad/KiCad.app/Contents/Frameworks/Python.framework/Versions/Current/bin/python3
-  $KPY software/tools/export_step.py --all
+  $KPY software/OpenDrone-Scripts/kicad/export_step.py --all
 
 KiCad may stay open: every board edit happens on a temp copy.
 
@@ -103,6 +103,12 @@ PRESETS = {
 }
 
 MIN_OUTSIDE_MM2 = 0.001  # ignore rounding-level slivers of copper past the edge
+
+# The clipped temp board has to be written beside the source (see
+# clip_board_to_outline), so it lands inside a repo. The pid keeps concurrent
+# runs from colliding on one filename, and discover() skips the prefix so a
+# run in flight is never mistaken for a real board.
+TEMP_PREFIX = ".export_step_tmp_"
 
 # Boards are DISCOVERED, never listed. A new repo or a new variant is picked up
 # with no edit to this file. Two rules do the whole job:
@@ -146,6 +152,8 @@ def discover(root, only_repo=None):
                 if not fn.endswith(".kicad_pcb"):
                     continue
                 stem = fn[: -len(".kicad_pcb")]
+                if stem.startswith(TEMP_PREFIX):
+                    continue
                 if not os.path.exists(os.path.join(dirpath, stem + ".kicad_pro")):
                     continue
                 found.append((repo, os.path.join(dirpath, fn), product_name(repo, stem)))
@@ -182,7 +190,7 @@ def clip_board_to_outline(board_path, scratch):
 
     stem = os.path.splitext(os.path.basename(board_path))[0]
     srcdir = os.path.dirname(os.path.abspath(board_path))
-    tmp_stem = os.path.join(srcdir, f".export_step_tmp_{stem}")
+    tmp_stem = os.path.join(srcdir, f"{TEMP_PREFIX}{os.getpid()}_{stem}")
     tmp = tmp_stem + ".kicad_pcb"
     # Register the STEM, not the files: saving a board also makes a .kicad_prl
     # (and sometimes a .kicad_pro) that we never asked for. Cleanup globs.
@@ -202,98 +210,122 @@ def clip_board_to_outline(board_path, scratch):
         return board_path, "no-outline", None, None
 
     L = pcbnew.UNDEFINED_LAYER  # padstack "all layers"
-    clipped = deleted = undrilled = 0
+    clipped = deleted = notched = 0
 
-    def outside_area(poly):
+    def outside_area(poly, region):
         t = pcbnew.SHAPE_POLY_SET(poly)
-        t.BooleanSubtract(outline)
+        t.BooleanSubtract(region)
         return sum(abs(t.Outline(i).Area()) for i in range(t.OutlineCount())) / 1e12
 
-    # Copper layers a padstack can vary across. F/In1/B is enough: a pad is
-    # either uniform or front/inner/back, and these cover every surface the
-    # exported model can show.
-    CU = (pcbnew.F_Cu, pcbnew.In1_Cu, pcbnew.B_Cu)
+    def circle(cx, cy, dx, dy, segs=48):
+        c = pcbnew.SHAPE_POLY_SET()
+        c.NewOutline()
+        rx, ry = dx / 2, (dy if dy > 0 else dx) / 2
+        for k in range(segs):
+            a = 2 * math.pi * k / segs
+            c.Append(int(cx + rx * math.cos(a)), int(cy + ry * math.sin(a)))
+        return c
 
-    def pad_outside(pad):
-        return max(outside_area(pad.GetEffectivePolygon(l, pcbnew.ERROR_INSIDE))
-                   for l in CU)
-
+    # PASS 1 - castellations. A drill that straddles Edge.Cuts is a castellation:
+    # on the finished board the router cuts through it, leaving a plated notch in
+    # the edge, which is exactly what the KiCad 3D viewer draws. Cut those holes
+    # OUT OF the outline so the board body carries the notch, then drop the drill
+    # so no floating barrel is exported. Deleting the drill without notching the
+    # outline (an earlier version of this) loses the notch entirely.
+    straddling = []
     for fp in board.GetFootprints():
-        for pad in list(fp.Pads()):
-            if pad_outside(pad) > MIN_OUTSIDE_MM2:
-                # Do NOT edit the pad in place. Reshaping a pad that is already
-                # PAD_SHAPE_CUSTOM, or whose padstack is front/inner/back,
-                # SILENTLY leaves the original primitives behind and the pad
-                # keeps its full size. Rebuilding sidesteps every padstack rule:
-                # a fresh pad is uniform, unrotated and empty.
-                shape = pcbnew.SHAPE_POLY_SET()
-                for l in CU:
-                    shape.BooleanAdd(pad.GetEffectivePolygon(l, pcbnew.ERROR_INSIDE))
-                keep = pcbnew.SHAPE_POLY_SET(shape)
-                keep.BooleanIntersection(outline)
-
-                layerset, net = pad.GetLayerSet(), pad.GetNetCode()
-                pos, number = pad.GetPosition(), pad.GetNumber()
-                fp.Delete(pad)
-
-                if keep.OutlineCount() == 0:
-                    # Wholly past the edge: the router removes it, so do we.
-                    deleted += 1
-                    continue
-
-                # An outline with interior cutouts yields an intersection with
-                # holes, and a pad primitive cannot carry holes. Fracture folds
-                # them into one contour.
-                keep.Fracture()
-                new_pad = pcbnew.PAD(fp)
-                new_pad.SetNumber(number)
-                new_pad.SetAttribute(pcbnew.PAD_ATTRIB_SMD)
-                new_pad.SetLayerSet(layerset)
-                new_pad.SetPosition(pos)
-                new_pad.SetDrillSize(pcbnew.VECTOR2I(0, 0))
-                new_pad.SetShape(L, pcbnew.PAD_SHAPE_CUSTOM)
-                new_pad.SetAnchorPadShape(L, pcbnew.PAD_SHAPE_CIRCLE)
-                new_pad.SetSize(L, pcbnew.VECTOR2I(10000, 10000))
-                local = pcbnew.SHAPE_POLY_SET(keep)
-                local.Move(pcbnew.VECTOR2I(-pos.x, -pos.y))
-                for i in range(local.OutlineCount()):
-                    one = pcbnew.SHAPE_POLY_SET()
-                    one.AddOutline(local.Outline(i))
-                    new_pad.AddPrimitivePoly(L, one, 0, True)
-                new_pad.SetNetCode(net)
-                fp.Add(new_pad)
-                clipped += 1
-                continue
-
-            # Clipping the copper is not enough. A plated hole is exported as a
-            # barrel at the drill's own size and position, independent of the pad
-            # shape, so a castellated hole straddling the outline leaves a tube
-            # hanging in space. There is no way to export half a barrel, and the
-            # drill cannot be clipped, so drop it: a hole that is not fully inside
-            # the board is not a hole on the finished board.
+        for pad in fp.Pads():
             dx, dy = pad.GetDrillSizeX(), pad.GetDrillSizeY()
             if dx <= 0 and dy <= 0:
                 continue
-            hole = pcbnew.SHAPE_POLY_SET()
             pos = pad.GetPosition()
-            if dx == dy:
-                hole.NewOutline()
-                hole.Append(pos.x + dx // 2, pos.y)
-                for step in range(1, 32):
-                    a = 2 * math.pi * step / 32
-                    hole.Append(int(pos.x + dx / 2 * math.cos(a)),
-                                int(pos.y + dx / 2 * math.sin(a)))
-            else:
-                hole.NewOutline()
-                for sx, sy in ((-1, -1), (1, -1), (1, 1), (-1, 1)):
-                    hole.Append(int(pos.x + sx * dx / 2), int(pos.y + sy * dy / 2))
-            if outside_area(hole) > MIN_OUTSIDE_MM2:
-                pad.SetDrillSize(pcbnew.VECTOR2I(0, 0))
-                pad.SetAttribute(pcbnew.PAD_ATTRIB_SMD)
-                undrilled += 1
+            hole = circle(pos.x, pos.y, dx, dy)
+            if outside_area(hole, outline) > MIN_OUTSIDE_MM2:
+                straddling.append((pad, hole))
+
+    if straddling:
+        for _, hole in straddling:
+            outline.BooleanSubtract(hole)
+        for pad, _ in straddling:
+            pad.SetDrillSize(pcbnew.VECTOR2I(0, 0))
+            pad.SetAttribute(pcbnew.PAD_ATTRIB_SMD)
+            notched += 1
+
+        # Rewrite Edge.Cuts to the notched outline. Board-level and
+        # footprint-level edge graphics both have to go, or the old straight
+        # edge survives alongside the new one.
+        for d in list(board.GetDrawings()):
+            if d.GetLayer() == pcbnew.Edge_Cuts:
+                board.Remove(d)
+        for fp in board.GetFootprints():
+            for g in list(fp.GraphicalItems()):
+                if g.GetLayer() == pcbnew.Edge_Cuts:
+                    fp.Remove(g)
+        for i in range(outline.OutlineCount()):
+            contours = [outline.Outline(i)]
+            contours += [outline.Hole(i, h) for h in range(outline.HoleCount(i))]
+            for contour in contours:
+                one = pcbnew.SHAPE_POLY_SET()
+                one.AddOutline(contour)
+                shape = pcbnew.PCB_SHAPE(board)
+                shape.SetShape(pcbnew.SHAPE_T_POLY)
+                shape.SetLayer(pcbnew.Edge_Cuts)
+                shape.SetPolyShape(one)
+                shape.SetFilled(False)
+                shape.SetWidth(pcbnew.FromMM(0.05))
+                board.Add(shape)
+
+    # PASS 2 - copper. Anything past the (now notched) outline is cut away.
+    CU = (pcbnew.F_Cu, pcbnew.In1_Cu, pcbnew.B_Cu)
+
+    for fp in board.GetFootprints():
+        for pad in list(fp.Pads()):
+            if max(outside_area(pad.GetEffectivePolygon(l, pcbnew.ERROR_INSIDE), outline)
+                   for l in CU) <= MIN_OUTSIDE_MM2:
+                continue
+            # Do NOT edit the pad in place. Reshaping a pad that is already
+            # PAD_SHAPE_CUSTOM, or whose padstack is front/inner/back, SILENTLY
+            # leaves the original primitives behind and the pad keeps its full
+            # size. Rebuilding sidesteps every padstack rule: a fresh pad is
+            # uniform, unrotated and empty.
+            shape = pcbnew.SHAPE_POLY_SET()
+            for l in CU:
+                shape.BooleanAdd(pad.GetEffectivePolygon(l, pcbnew.ERROR_INSIDE))
+            keep = pcbnew.SHAPE_POLY_SET(shape)
+            keep.BooleanIntersection(outline)
+
+            layerset, net = pad.GetLayerSet(), pad.GetNetCode()
+            pos, number = pad.GetPosition(), pad.GetNumber()
+            fp.Delete(pad)
+
+            if keep.OutlineCount() == 0:
+                deleted += 1
+                continue
+
+            # An outline with cutouts yields an intersection with holes, and a
+            # pad primitive cannot carry holes. Fracture folds them into one.
+            keep.Fracture()
+            new_pad = pcbnew.PAD(fp)
+            new_pad.SetNumber(number)
+            new_pad.SetAttribute(pcbnew.PAD_ATTRIB_SMD)
+            new_pad.SetLayerSet(layerset)
+            new_pad.SetPosition(pos)
+            new_pad.SetDrillSize(pcbnew.VECTOR2I(0, 0))
+            new_pad.SetShape(L, pcbnew.PAD_SHAPE_CUSTOM)
+            new_pad.SetAnchorPadShape(L, pcbnew.PAD_SHAPE_CIRCLE)
+            new_pad.SetSize(L, pcbnew.VECTOR2I(10000, 10000))
+            local = pcbnew.SHAPE_POLY_SET(keep)
+            local.Move(pcbnew.VECTOR2I(-pos.x, -pos.y))
+            for i in range(local.OutlineCount()):
+                one = pcbnew.SHAPE_POLY_SET()
+                one.AddOutline(local.Outline(i))
+                new_pad.AddPrimitivePoly(L, one, 0, True)
+            new_pad.SetNetCode(net)
+            fp.Add(new_pad)
+            clipped += 1
 
     board.Save(tmp)
-    return tmp, clipped, deleted, undrilled
+    return tmp, clipped, deleted, notched
 
 
 def post_process(step_path, temp_stem, product):
@@ -336,7 +368,7 @@ def export(cli, board, out, preset, extra, dry_run, clip):
                 note = "  (clip skipped: pcbnew unavailable — run with KiCad's Python)"
             elif nclip or ndel or nhole:
                 note = (f"  (clipped {nclip} pad(s), removed {ndel} outside, "
-                        f"dropped {nhole} straddling hole(s))")
+                        f"notched {nhole} castellation(s) into the edge)")
             cmd[-1] = src
         result = subprocess.run(cmd, capture_output=True, text=True)
     finally:

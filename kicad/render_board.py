@@ -14,7 +14,7 @@ finally block.
 MUST be run with KiCad's bundled Python (it imports pcbnew):
 
   /Applications/KiCad/KiCad.app/Contents/Frameworks/Python.framework/Versions/Current/bin/python3 \
-      tools/render_board.py hardware/4in1.kicad_pcb --top images/front.png --bottom images/back.png
+      software/OpenDrone-Scripts/kicad/render_board.py hardware/4in1.kicad_pcb --top images/front.png --bottom images/back.png
 
 KiCad must be CLOSED before running (pcbnew writes the file). The script refuses to
 run if it detects KiCad open; override with --force.
