@@ -186,7 +186,7 @@ def clip_board_to_outline(board_path, scratch):
     try:
         import pcbnew
     except ImportError:
-        return board_path, None, None, None
+        return board_path, None, None, None, None
 
     stem = os.path.splitext(os.path.basename(board_path))[0]
     srcdir = os.path.dirname(os.path.abspath(board_path))
@@ -207,7 +207,7 @@ def clip_board_to_outline(board_path, scratch):
     if not board.GetBoardPolygonOutlines(outline, False) or outline.OutlineCount() == 0:
         # No closed Edge.Cuts to clip against. That is a board defect, not an
         # export problem, and it must not be reported as "pcbnew missing".
-        return board_path, "no-outline", None, None
+        return board_path, "no-outline", None, None, None
 
     L = pcbnew.UNDEFINED_LAYER  # padstack "all layers"
     clipped = deleted = notched = 0
@@ -247,8 +247,11 @@ def clip_board_to_outline(board_path, scratch):
         for _, hole in straddling:
             outline.BooleanSubtract(hole)
         for pad, _ in straddling:
+            # Zero the drill only. Setting PAD_ATTRIB_SMD here also collapses the
+            # pad's layer set to a single copper layer, and pass 2 then rebuilds
+            # only that side, silently losing all the back-side castellation
+            # copper. The drill size alone is what suppresses the barrel.
             pad.SetDrillSize(pcbnew.VECTOR2I(0, 0))
-            pad.SetAttribute(pcbnew.PAD_ATTRIB_SMD)
             notched += 1
 
         # Rewrite Edge.Cuts to the notched outline. Board-level and
@@ -294,8 +297,16 @@ def clip_board_to_outline(board_path, scratch):
             keep = pcbnew.SHAPE_POLY_SET(shape)
             keep.BooleanIntersection(outline)
 
-            layerset, net = pad.GetLayerSet(), pad.GetNetCode()
-            pos, number = pad.GetPosition(), pad.GetNumber()
+            # An SMD pad is normalised to ONE copper layer, so a rebuilt
+            # through-hole pad that lived on F.Cu and B.Cu silently loses a side.
+            # Emit one pad per side instead. Copy the layer set first: it is a
+            # reference into the pad and fp.Delete frees it.
+            layerset = pcbnew.LSET(pad.GetLayerSet())
+            sides = [l for l in (pcbnew.F_Cu, pcbnew.B_Cu) if layerset.Contains(l)]
+            noncopper = [l for l in layerset.Seq()
+                         if l not in (pcbnew.F_Cu, pcbnew.B_Cu) and not pcbnew.IsCopperLayer(l)]
+            net = pad.GetNetCode()
+            pos, number = pcbnew.VECTOR2I(pad.GetPosition()), str(pad.GetNumber())
             fp.Delete(pad)
 
             if keep.OutlineCount() == 0:
@@ -305,27 +316,101 @@ def clip_board_to_outline(board_path, scratch):
             # An outline with cutouts yields an intersection with holes, and a
             # pad primitive cannot carry holes. Fracture folds them into one.
             keep.Fracture()
-            new_pad = pcbnew.PAD(fp)
-            new_pad.SetNumber(number)
-            new_pad.SetAttribute(pcbnew.PAD_ATTRIB_SMD)
-            new_pad.SetLayerSet(layerset)
-            new_pad.SetPosition(pos)
-            new_pad.SetDrillSize(pcbnew.VECTOR2I(0, 0))
-            new_pad.SetShape(L, pcbnew.PAD_SHAPE_CUSTOM)
-            new_pad.SetAnchorPadShape(L, pcbnew.PAD_SHAPE_CIRCLE)
-            new_pad.SetSize(L, pcbnew.VECTOR2I(10000, 10000))
             local = pcbnew.SHAPE_POLY_SET(keep)
             local.Move(pcbnew.VECTOR2I(-pos.x, -pos.y))
-            for i in range(local.OutlineCount()):
-                one = pcbnew.SHAPE_POLY_SET()
-                one.AddOutline(local.Outline(i))
-                new_pad.AddPrimitivePoly(L, one, 0, True)
-            new_pad.SetNetCode(net)
-            fp.Add(new_pad)
+
+            for side in sides or [pcbnew.F_Cu]:
+                new_pad = pcbnew.PAD(fp)
+                new_pad.SetNumber(number)
+                new_pad.SetAttribute(pcbnew.PAD_ATTRIB_SMD)
+                ls = pcbnew.LSET()
+                ls.AddLayer(side)
+                for l in noncopper:
+                    ls.AddLayer(l)
+                new_pad.SetLayerSet(ls)
+                new_pad.SetPosition(pos)
+                new_pad.SetDrillSize(pcbnew.VECTOR2I(0, 0))
+                new_pad.SetShape(L, pcbnew.PAD_SHAPE_CUSTOM)
+                new_pad.SetAnchorPadShape(L, pcbnew.PAD_SHAPE_CIRCLE)
+                new_pad.SetSize(L, pcbnew.VECTOR2I(10000, 10000))
+                for i in range(local.OutlineCount()):
+                    one = pcbnew.SHAPE_POLY_SET()
+                    one.AddOutline(local.Outline(i))
+                    new_pad.AddPrimitivePoly(L, one, 0, True)
+                new_pad.SetNetCode(net)
+                fp.Add(new_pad)
             clipped += 1
 
+    exposed = add_mask_exposed_copper(board, outline, pcbnew)
+
     board.Save(tmp)
-    return tmp, clipped, deleted, notched
+    return tmp, clipped, deleted, notched, exposed
+
+
+def add_mask_exposed_copper(board, outline, pcbnew):
+    """Draw copper that a soldermask opening leaves bare, as gold pads.
+
+    Graphics on F.Mask/B.Mask (logos, lettering) are mask openings: on the real
+    board they expose bare copper, which is how the RX in "OpenRX" reads. There
+    is no flag for this. kicad-cli models no mask apertures at all, so including
+    the mask exports two unbroken sheets and shows nothing.
+
+    So synthesise it. A mask layer rendered to polygons IS the set of openings,
+    and a copper layer rendered to polygons is all the copper, so the
+    intersection of the two is exactly the bare metal. Pad areas are subtracted
+    because pads are already exported. What remains is added as flat SMD pads,
+    which the STEP export colours like any other exposed copper.
+    """
+    made = 0
+    holder = None
+    for cu, mask in ((pcbnew.F_Cu, pcbnew.F_Mask), (pcbnew.B_Cu, pcbnew.B_Mask)):
+        openings = pcbnew.SHAPE_POLY_SET()
+        copper = pcbnew.SHAPE_POLY_SET()
+        board.ConvertBrdLayerToPolygonalContours(mask, openings)
+        board.ConvertBrdLayerToPolygonalContours(cu, copper)
+        if openings.OutlineCount() == 0 or copper.OutlineCount() == 0:
+            continue
+
+        bare = pcbnew.SHAPE_POLY_SET(openings)
+        bare.BooleanIntersection(copper)
+        bare.BooleanIntersection(outline)
+        for fp in board.GetFootprints():
+            for pad in fp.Pads():
+                if pad.IsOnLayer(cu):
+                    bare.BooleanSubtract(pad.GetEffectivePolygon(cu, pcbnew.ERROR_INSIDE))
+        if bare.OutlineCount() == 0:
+            continue
+        bare.Fracture()
+
+        if holder is None:
+            holder = pcbnew.FOOTPRINT(board)
+            holder.SetReference("MASKART")
+            holder.Reference().SetVisible(False)
+            board.Add(holder)
+
+        layers = pcbnew.LSET()
+        layers.AddLayer(cu)
+        for i in range(bare.OutlineCount()):
+            contour = bare.Outline(i)
+            if abs(contour.Area()) / 1e12 < 0.002:
+                continue  # tessellation slivers, not artwork
+            one = pcbnew.SHAPE_POLY_SET()
+            one.AddOutline(contour)
+            centre = one.BBox().Centre()
+            one.Move(pcbnew.VECTOR2I(-centre.x, -centre.y))
+
+            pad = pcbnew.PAD(holder)
+            pad.SetAttribute(pcbnew.PAD_ATTRIB_SMD)
+            pad.SetLayerSet(layers)
+            pad.SetPosition(centre)
+            pad.SetDrillSize(pcbnew.VECTOR2I(0, 0))
+            pad.SetShape(pcbnew.UNDEFINED_LAYER, pcbnew.PAD_SHAPE_CUSTOM)
+            pad.SetAnchorPadShape(pcbnew.UNDEFINED_LAYER, pcbnew.PAD_SHAPE_CIRCLE)
+            pad.SetSize(pcbnew.UNDEFINED_LAYER, pcbnew.VECTOR2I(10000, 10000))
+            pad.AddPrimitivePoly(pcbnew.UNDEFINED_LAYER, one, 0, True)
+            holder.Add(pad)
+            made += 1
+    return made
 
 
 def post_process(step_path, temp_stem, product):
@@ -359,16 +444,17 @@ def export(cli, board, out, preset, extra, dry_run, clip):
     temp_stem = ""
     try:
         if clip:
-            src, nclip, ndel, nhole = clip_board_to_outline(board, scratch)
+            src, nclip, ndel, nhole, nmask = clip_board_to_outline(board, scratch)
             if scratch:
                 temp_stem = os.path.basename(scratch[0])
             if nclip == "no-outline":
                 note = "  WARNING: board has no closed Edge.Cuts outline, nothing clipped"
             elif nclip is None:
                 note = "  (clip skipped: pcbnew unavailable — run with KiCad's Python)"
-            elif nclip or ndel or nhole:
+            elif nclip or ndel or nhole or nmask:
                 note = (f"  (clipped {nclip} pad(s), removed {ndel} outside, "
-                        f"notched {nhole} castellation(s) into the edge)")
+                        f"notched {nhole} castellation(s), "
+                        f"{nmask} mask-exposed copper shape(s))")
             cmd[-1] = src
         result = subprocess.run(cmd, capture_output=True, text=True)
     finally:
