@@ -90,6 +90,69 @@ def model_tuple(model):
 
 FIELDS = ("file", "offset", "scale", "rotation", "visible")
 
+# --- E6: what --subst-models actually swaps in -------------------------------
+# export_step.py passes --subst-models because KiCad's STEP exporter cannot read
+# VRML: without it every .wrl-referenced part is silently DROPPED (OpenRX-Lite
+# goes 9.1 MB -> 3.1 MB). The flag makes kicad-cli use a same-named .step
+# instead. That is only safe while the two files are the same geometry. Where
+# they are not, the 3D viewer stays right (it renders the .wrl) and the STEP
+# export is wrong, which is exactly the failure that is hard to catch by eye.
+WRL_POINTS = re.compile(r"point\s*\[(.*?)\]", re.S)
+TRIPLE = re.compile(r"(-?[\d.eE+]+)\s+(-?[\d.eE+]+)\s+(-?[\d.eE+]+)")
+STEP_POINT = re.compile(r"CARTESIAN_POINT\s*\(\s*'[^']*'\s*,\s*\(\s*"
+                        r"([-\d.eE+]+)\s*,\s*([-\d.eE+]+)\s*,\s*([-\d.eE+]+)\s*\)")
+SUBST_TOL_MM = 0.3     # below this is tessellation and rounding, not a different part
+_bbox_cache = {}
+
+
+def _bbox(points, scale=1.0):
+    if not points:
+        return None
+    cols = list(zip(*points))
+    return tuple((max(c) - min(c)) * scale for c in cols)
+
+
+def wrl_bbox(path):
+    """Envelope of a VRML model in mm. KiCad authors .wrl in 0.1 inch units."""
+    try:
+        text = open(path, errors="replace").read()
+    except OSError:
+        return None
+    pts = []
+    for block in WRL_POINTS.finditer(text):
+        pts += [tuple(float(v) for v in t.groups()) for t in TRIPLE.finditer(block.group(1))]
+    return _bbox(pts, 2.54)
+
+
+def step_bbox(path):
+    """Envelope of a STEP model in mm. Entities may wrap lines, so read whole."""
+    try:
+        text = open(path, errors="replace").read().replace("\r", "").replace("\n", "")
+    except OSError:
+        return None
+    return _bbox([tuple(float(v) for v in m.groups()) for m in STEP_POINT.finditer(text)])
+
+
+def substitution_gap(model_path):
+    """mm difference between a .wrl and the .step --subst-models would use.
+
+    Returns (gap, step_path, wrl_size, step_size), or None when the model is not
+    a VRML reference or has no STEP sibling to be substituted by.
+    """
+    if not model_path.lower().endswith((".wrl", ".wrz")):
+        return None
+    stem = os.path.splitext(model_path)[0]
+    step = next((stem + e for e in (".step", ".stp", ".STEP", ".Step")
+                 if os.path.exists(stem + e)), None)
+    if not step or not os.path.exists(model_path):
+        return None
+    if stem not in _bbox_cache:
+        _bbox_cache[stem] = (wrl_bbox(model_path), step_bbox(step))
+    wb, sb = _bbox_cache[stem]
+    if not wb or not sb:
+        return None
+    return (max(abs(s - w) for s, w in zip(sb, wb)), step, wb, sb)
+
 
 def drift_fields(bt, lt):
     """Which parts of the model entry differ, so E5 says what actually moved.
@@ -132,7 +195,7 @@ def check_board(board_path, pcbnew, verbose=False):
     libs.update(parse_fp_lib_table(os.path.join(project_dir, "fp-lib-table")))
 
     board = pcbnew.LoadBoard(board_path)
-    counts = {k: 0 for k in ("E1", "E2", "E3", "E4", "E5")}
+    counts = {k: 0 for k in ("E1", "E2", "E3", "E4", "E5", "E6")}
     detail = []
 
     for fp in board.GetFootprints():
@@ -148,6 +211,17 @@ def check_board(board_path, pcbnew, verbose=False):
                        for ext in (".step", ".stp", ".wrl", ".wrz", ".STEP", ".Step", "")):
                 counts["E3"] += 1
                 detail.append(f"E3 {ref:8s} model not on disk: {model.m_Filename}")
+                continue
+
+            subst = substitution_gap(resolved)
+            if subst and subst[0] > SUBST_TOL_MM:
+                gap, step_path, wb, sb = subst
+                counts["E6"] += 1
+                detail.append(
+                    f"E6 {ref:8s} substituted STEP is {gap:.2f} mm off the VRML: "
+                    f"{os.path.basename(step_path)}")
+                detail.append(f"      viewer (.wrl): {wb[0]:6.2f} x {wb[1]:5.2f} x {wb[2]:5.2f} mm")
+                detail.append(f"      export (.step):{sb[0]:6.2f} x {sb[1]:5.2f} x {sb[2]:5.2f} mm")
 
         uri = libs.get(nick)
         if uri is None:
@@ -212,34 +286,37 @@ def main():
     else:
         p.error("pass a board or --all")
 
-    total = {k: 0 for k in ("E1", "E2", "E3", "E4", "E5")}
+    codes = ("E1", "E2", "E3", "E4", "E5", "E6")
+    total = {k: 0 for k in codes}
     failing = 0
     blocking = 0
-    print(f"{'BOARD':<34} {'E1':>4} {'E2':>4} {'E3':>4} {'E4':>4} {'E5':>4}")
-    print("-" * 60)
+    print(f"{'BOARD':<34}" + "".join(f"{c:>4}" for c in codes))
+    print("-" * 64)
     for name, board_path in jobs:
         counts, detail = check_board(board_path, pcbnew, a.verbose)
         for k in total:
             total[k] += counts[k]
         bad = sum(counts.values())
         failing += bool(bad)
-        blocks = counts["E3"] + counts["E4"]
+        blocks = counts["E3"] + counts["E4"] + counts["E6"]
         blocking += bool(blocks)
         note = "   clean" if not bad else ("   BLOCKS EXPORT" if blocks else "")
-        print(f"{name:<34} {counts['E1']:>4} {counts['E2']:>4} {counts['E3']:>4} "
-              f"{counts['E4']:>4} {counts['E5']:>4}{note}")
+        print(f"{name:<34}" + "".join(f"{counts[c]:>4}" for c in codes) + note)
         if a.verbose:
             for line in detail:
                 print("    " + line)
-    print("-" * 60)
-    print(f"{'TOTAL':<34} {total['E1']:>4} {total['E2']:>4} {total['E3']:>4} "
-          f"{total['E4']:>4} {total['E5']:>4}   {failing}/{len(jobs)} with findings, "
-          f"{blocking}/{len(jobs)} blocking")
+    print("-" * 64)
+    print(f"{'TOTAL':<34}" + "".join(f"{total[c]:>4}" for c in codes) +
+          f"   {failing}/{len(jobs)} with findings, {blocking}/{len(jobs)} blocking")
     print("\nE1 nickname unresolvable · E2 footprint gone from library · "
           "E3 model file missing\nE4 board lost a model · E5 board/library drift "
-          "(a library-only fix cannot reach these)")
-    print("E3 and E4 empty the export. E1, E2 and E5 do not: the board carries "
-          "its own\nfootprint copies, and those are what kicad-cli exports.")
+          "(a library-only fix cannot reach these)\nE6 the .step that "
+          "--subst-models swaps in is not the same shape as the .wrl")
+    print("\nE3, E4 and E6 are blocking. E3/E4 leave a component out; E6 ships a "
+          "component\nat the wrong size or place, and the 3D viewer will NOT show "
+          "it because the\nviewer renders the .wrl while the STEP export renders "
+          "the substitute.\nE1, E2 and E5 do not affect the export: the board "
+          "carries its own footprint\ncopies, and those are what kicad-cli exports.")
     if a.blocking_only:
         return 1 if blocking else 0
     return 1 if failing else 0

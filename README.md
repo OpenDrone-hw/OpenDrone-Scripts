@@ -263,9 +263,9 @@ $KPY kicad/check_models.py --all --products --blocking-only   # release gate
 $KPY kicad/check_models.py <board.kicad_pcb> -v
 ```
 
-Five checks per footprint. E3 is counted per model and can coexist with any
-other code on the same footprint; E1, E2, E4 and E5 are mutually exclusive and
-stop at the first hit, so fixing E1/E2 and re-running surfaces the drift
+Six checks per footprint. E3 and E6 are counted per model and can coexist with
+any other code on the same footprint; E1, E2, E4 and E5 are mutually exclusive
+and stop at the first hit, so fixing E1/E2 and re-running surfaces the drift
 underneath.
 
 | | meaning | effect on the STEP |
@@ -273,13 +273,51 @@ underneath.
 | E1 | library nickname in no `fp-lib-table` | none: the board embeds its own footprint copy |
 | E2 | footprint gone from that library | none, same reason |
 | E3 | referenced model file not on disk | **component is missing from the export** |
-| E4 | library has models, board instance has none | component missing |
+| E4 | library has models, board instance has none | **component missing** |
 | E5 | board and library disagree on path, offset, scale, rotation or visibility | none directly: the board's own values are exported |
+| E6 | the `.step` substituted for a `.wrl` is a different shape | **component is exported at the wrong size or place** |
 
-E1 and E2 are library hygiene, not export defects, and the table is easy to
-misread: OpenESC-30x30's `4in1` reports 12 E1 and still exports every component,
-because the board carries its own footprint copies. E3 and E4 are the ones that
-silently empty a board.
+E3, E4 and E6 are blocking. E1, E2 and E5 are library hygiene, not export
+defects, and the table is easy to misread: OpenESC-30x30's `4in1` reports 12 E1
+and still exports every component, because the board carries its own footprint
+copies.
+
+### E6 and `--subst-models`, the one that fools the 3D viewer
+
+KiCad's STEP exporter cannot read VRML. `export_step.py` therefore passes
+`--subst-models`, which makes kicad-cli use a same-named `.step` in place of the
+`.wrl` a board references. The flag is not optional: without it every
+`.wrl`-referenced part is dropped outright, taking OpenRX-Lite from 9.1 MB to
+3.1 MB of missing connectors, crystal and antenna.
+
+The catch is that nothing checks the substitute is the same part. **The 3D
+viewer renders the `.wrl` and the STEP export renders the `.step`**, so a bad
+substitute looks perfect in KiCad and wrong in Onshape, with no warning
+anywhere. That is not a defect in this script's clipping, and switching to
+KiCad's File > Export > STEP does not avoid it: the same substitution option
+exists there, and turning it off drops the parts instead of misplacing them.
+
+Measured across the 8 products, 21 instances of 8 distinct models:
+
+| model | viewer `.wrl` | exported `.step` | on |
+|---|---|---|---|
+| `USB-TYPE-C-SMD_TYPE-C-16P-QTWT` | 11.34 x 7.60 x 3.89 | **40.18 x 25.25 x 16.51** | both FCs, `USB1` |
+| `TF-SMD_TF-PUSH` | 16.15 x 15.20 x 2.65 | **21.79 x 42.71 x 9.90** | OpenFC-Lite `Card1` |
+| `ANT-SMD_L3.2-W1.6-H1.3` | 3.20 x 1.60 x 1.30 | 9.06 x 1.60 x 1.49 | all 4 RX, `AE1` |
+| `CRYSTAL-SMD_4P-L1.6-W1.2-BL` | 1.60 x 1.20 x 0.41 | 1.60 x 1.20 x 2.39 | all 4 RX, `X1` |
+| `SW-SMD_4P-L3.0-W2.0-P0.85-LS3.5` | 3.50 x 2.01 x 0.58 | 3.50 x 2.01 x 2.12 | both FCs, Gemini |
+| `SOT-23-6_L2.9-W1.6-P0.95-LS2.9-BL` | 2.90 x 2.90 x 1.15 | 3.85 x 2.90 x 1.15 | Mini `U3`/`U4` |
+| `FILTER-SMD_10P-L2.0-W1.6-BL` | 2.02 x 1.62 x 0.97 | 2.51 x 1.62 x 0.97 | Gemini, Mono |
+| `X2SON-4_L0.8-W0.8-P0.48-TL-DPW` | 0.80 x 0.80 x 0.40 | 0.80 x 0.80 x 0.90 | both FCs |
+
+The USB-C substitute is 3.5x oversized in every axis and the ratios are not
+uniform, so it is a different model rather than a units error. The same 40.18 x
+25.25 mm figure already appears in the `packaging_art.py` notes below, from a
+separate measurement of the same file. Both ESC boards are E6 clean.
+
+The fix is per model, in the library, not in this script: replace the bad
+`.step` with one that matches the `.wrl`. Until then those exports carry wrong
+geometry and `--blocking-only` refuses to build them.
 
 E5 is the one a library-only fix cannot reach, because a `.kicad_pcb` embeds its
 own copy of every footprint. On the FC boards it is not noise: the board
@@ -289,9 +327,12 @@ the library and centred on the board, a 2.5 mm and 3.5 mm X shift). The exported
 STEP uses the board values, so those exports are right and the library is stale.
 `-v` prints which field moved and both sets of numbers.
 
-Status as of 2026-08-13, all 17 discovered boards: the 8 FC/ESC/RX products are
-free of E3 and E4, so they export complete. Three boards are **not publishable**
-until their models are fixed:
+Status as of 2026-08-13, all 17 discovered boards. The 8 FC/ESC/RX products are
+free of E3 and E4, so every component is present, but **6 of the 8 are blocked
+on E6**: both FCs and all four RX carry at least one substituted model that is
+the wrong shape. Only OpenESC-20x20 and OpenESC-30x30 are releasable as they
+stand. Three further boards are not publishable at all until their models are
+fixed:
 
 - `Charger`, 14 E3. Those 14 refs carry a hardcoded absolute path from before
   the repo moved under `hardware/`, so the directory they name no longer exists,
