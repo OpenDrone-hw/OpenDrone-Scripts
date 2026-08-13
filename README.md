@@ -40,8 +40,14 @@ One command exports every board in every repo to `<repo>/export/<Product>.step`:
 ```bash
 $KPY kicad/export_step.py --all
 $KPY kicad/export_step.py --all --repo OpenRX
+$KPY kicad/export_step.py --all --products          # the publishable set
 $KPY kicad/export_step.py <board.kicad_pcb> -o out.step
 ```
+
+`export/` is gitignored in every board repo. These files are **release assets**,
+not tracked source: the FC/ESC/RX set measures 134 MB, and committing it would
+store a fresh copy of every board in git history on each re-export. See
+"Publishing a fit-check set" below.
 
 Boards are **discovered, never listed**. A `.kicad_pcb` counts as a board when a
 `.kicad_pro` of the same stem sits beside it, which both identifies a real
@@ -51,34 +57,146 @@ silently drops every project-relative 3D model, which is how
 Directories named `.history`, `backups`, `archive`, `libs`, `.pio`, `export` and
 `*.pretty` are skipped. Adding a repo or a variant needs no edit to the script.
 
-The export is board body + components + pads + silkscreen. Three decisions,
-each measured rather than assumed:
+Discovery finds every real board, but not every board is a **product**. Fab
+panels and bench fixtures export fine and nobody fits one into their own design,
+so `--products` drops board stems ending in `-panel`, `-all`, `-QC`, `-Flashing`
+and `-MotorTest`. Product identity is not derivable from the files, so that list
+lives in `export_step.py`, in one place, rather than as a marker file in each
+board repo. `check_models.py --products` takes the same flag and selects the
+same set.
 
-- **Soldermask excluded.** kicad-cli gives the mask a 17% transparency factor
-  and silkscreen 10%, which makes imported boards look like frosted glass. The
-  mask solid also spans z 0.91-0.96 mm on a 1.0 mm board while pads top out at
-  0.95 mm, so it covers the gold pads and greys them out. The board body is
-  already opaque green. Residual transparency is zeroed in the written STEP.
-- **Tracks and zones excluded.** Copper spans z 0.91-0.945 mm, inside where the
-  mask sits, so it is invisible from outside a real board. Including it roughly
-  doubles the file for geometry nobody can see. `--preset full` adds it back for
-  copper inspection work; that output does not belong in a repo.
+The target is a model that matches the board in your hand. The export is board
+body + components + pads + silkscreen, plus copper that a mask opening leaves
+bare. Each decision is measured:
+
+- **Soldermask excluded.** kicad-cli models no mask apertures: exporting F.Mask
+  and B.Mask adds only 2-3 `ADVANCED_FACE`s over a body-only export, i.e. flat
+  sheets with no openings cut, which buries every pad under an unbroken slab. It
+  also carries a 17% transparency factor (silkscreen 10%), which made earlier
+  exports look like frosted glass. Residual transparency is zeroed in the
+  written STEP.
+- **Mask graphics recovered instead.** Logos and lettering drawn on F.Mask or
+  B.Mask are openings that expose bare copper on the real board, which is how
+  the RX in "OpenRX" reads. Since kicad-cli emits no apertures, the exposed
+  regions are synthesised: mask polygons intersected with copper polygons is
+  exactly the bare metal, and it is added as flat pads.
+- **Tracks and zones excluded, for file size.** Including them measures 1.53x on
+  OpenRX-Lite and 1.79x on OpenFC-Lite. Do not repeat the older claim that they
+  are hidden under the mask: the mask is excluded here, so that copper would sit
+  about 35 um proud and would be plainly visible, exactly as the pads are.
+  `--preset full` adds it back for copper inspection work; that output does not
+  belong in a release.
 - **Copper past Edge.Cuts removed.** Edge pads are drawn beyond the outline on
   purpose so the fab plates and routes through them, but the router cuts that
   copper away on the finished board. kicad-cli exports the uncut pad, leaving
   tabs hanging in space, plus a plated barrel at every straddling drill.
-  Any pad with copper outside is rebuilt from scratch as a drill-free SMD pad
-  carrying the clipped shape. Editing pads in place does not work: an already
-  custom pad, or a front/inner/back padstack, silently keeps its original size.
-  Verified across all 16 boards with a closed outline: zero pads and zero holes
-  past Edge.Cuts. Component 3D models are not clipped, that needs a CAD kernel.
-  `--no-clip` disables it.
+  Straddling drills are notched out of the outline first so the body carries the
+  castellation, then any pad with copper outside is rebuilt from scratch as a
+  drill-free SMD pad carrying the clipped shape. Editing pads in place does not
+  work: an already custom pad, or a front/inner/back padstack, silently keeps
+  its original size.
+
+Measured on the 8 product boards after clipping: zero drill holes outside the
+outline, and the only copper left outside is 0 to 12 slivers per board (both FC
+boards are at zero) of at most 7.1e-5 mm2 each. That is an order of magnitude
+under the 1e-3 mm2 `MIN_OUTSIDE_MM2` threshold that deliberately ignores them,
+and far below fab resolution: they are polygonisation error on rounded pads, not
+overhang. Do not restate this as "zero pads outside"; it is zero *visible* pads
+outside. `--no-clip` disables the whole pass.
+
+Silkscreen is not clipped by this script and can overhang in the `.kicad_pcb`
+(65.7 mm2 on OpenFC-Lite, 54.5 mm2 on the Mini). **It does not reach the STEP**:
+kicad-cli clips silk to the board outline itself. Verified by measuring the
+board-frame geometry in `OpenFC-Lite.step`, which spans 37.942 x 37.942 mm
+against a 37.940 x 37.940 mm outline, the 2 um being tessellation. Component 3D
+models are *not* clipped, which needs a CAD kernel.
 
 Clipping happens on a temp copy beside the source board (not in `/tmp`, or
 `${KIPRJMOD}` breaks). The source `.kicad_pcb` is never written and KiCad may
 stay open. An unresolved 3D model is only a warning to kicad-cli, which still
 exits 0, so the script reports missing models explicitly rather than shipping a
 half-empty board.
+
+## `kicad/check_models.py` — 3D model pre-flight
+
+kicad-cli treats an unresolvable 3D model as a warning and still exits 0, so a
+board that has lost half its components exports "successfully" as a bare slab.
+This turns that into a hard failure and runs it **before** the export. Run it
+against the set you are about to publish; a fit-check model missing a connector
+is worse than no model at all.
+
+```bash
+$KPY kicad/check_models.py --all --products
+$KPY kicad/check_models.py <board.kicad_pcb> -v
+```
+
+Five checks per footprint. E3 is counted per model and can coexist with any
+other code on the same footprint; E1, E2, E4 and E5 are mutually exclusive and
+stop at the first hit, so fixing E1/E2 and re-running surfaces the drift
+underneath.
+
+| | meaning | effect on the STEP |
+|---|---|---|
+| E1 | library nickname in no `fp-lib-table` | none: the board embeds its own footprint copy |
+| E2 | footprint gone from that library | none, same reason |
+| E3 | referenced model file not on disk | **component is missing from the export** |
+| E4 | library has models, board instance has none | component missing |
+| E5 | board and library disagree on path, offset, scale, rotation or visibility | none directly: the board's own values are exported |
+
+E1 and E2 are library hygiene, not export defects, and the table is easy to
+misread: OpenESC-30x30's `4in1` reports 12 E1 and still exports every component,
+because the board carries its own footprint copies. E3 and E4 are the ones that
+silently empty a board.
+
+E5 is the one a library-only fix cannot reach, because a `.kicad_pcb` embeds its
+own copy of every footprint. On the FC boards it is not noise: the board
+instances of `USB1`, `P1`, `U8`/`U14` and `Card1` carry hand-corrected offsets
+the library never received (the 6P and 8P JST models are anchored on pin 1 in
+the library and centred on the board, a 2.5 mm and 3.5 mm X shift). The exported
+STEP uses the board values, so those exports are right and the library is stale.
+`-v` prints which field moved and both sets of numbers.
+
+Status as of 2026-08-13, all 17 discovered boards: the 8 FC/ESC/RX products are
+free of E3 and E4, so they export complete. Three boards are **not publishable**
+until their models are fixed:
+
+- `Charger`, 14 E3. Those 14 refs carry a hardcoded absolute path from before
+  the repo moved under `hardware/`, so the directory they name no longer exists,
+  while the other 23 refs in that same footprint directory correctly use
+  `${KIPRJMOD}`. All 5 distinct model files are present at the `${KIPRJMOD}`
+  path, so rewriting the prefix fixes all 14. An absolute home-directory path in
+  a board file also breaks for every other person who clones the repo.
+- `OpenAIO` and `OpenAIO-Whoop`, 65 E3 and 60 E2 each. Both would export as
+  near-empty slabs.
+
+## Publishing a fit-check set
+
+The STEPs exist so people can check whether a board fits their own design, so
+they ship as **GitHub release assets** attached to the product revision they
+were built from, not as tracked files. `export/` stays gitignored.
+
+Build the set, then attach it to that repo's rev release:
+
+```bash
+$KPY kicad/check_models.py --all --products --repo OpenRX     # must be E3/E4 clean
+rm -rf ~/OpenDrone/hardware/OpenRX/export                     # see below
+$KPY kicad/export_step.py  --all --products --repo OpenRX
+gh release upload rev3.1 ~/OpenDrone/hardware/OpenRX/export/*.step \
+   -R OpenDrone-hw/OpenRX
+```
+
+**Clear `export/` first.** `--products` only decides what gets *written*; it
+never removes what an earlier `--all` run left behind. A plain `--all` puts
+`OpenRX-all.step` (a fab panel) and the QC and Flashing fixtures in the same
+directory, so the glob above would publish a panel as if it were a product.
+Deleting the directory costs one re-export and makes the glob mean exactly the
+publishable set.
+
+Tags are `rev1`, `rev2`, `rev3`, one release per board revision. Assets keep the
+plain product name (`OpenRX-Lite.step`); the revision is carried by the release,
+not the filename. Re-exporting for a new revision means a new tag and a new
+release, never overwriting an old asset, so a user who built around rev3 can
+still fetch exactly what they measured against.
 
 ## `kicad/render_board.py` — standardized board renders
 

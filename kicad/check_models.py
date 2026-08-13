@@ -82,6 +82,44 @@ def model_tuple(model):
             bool(model.m_Show))
 
 
+FIELDS = ("file", "offset", "scale", "rotation", "visible")
+
+
+def drift_fields(bt, lt):
+    """Which parts of the model entry differ, so E5 says what actually moved.
+
+    Reporting only the filename (what this used to do) makes E5 unreadable: the
+    common case on these boards is a board instance whose filename matches the
+    library exactly and whose OFFSET does not, so both lines printed identically
+    and the finding looked like a bug in the checker.
+    """
+    if len(bt) != len(lt):
+        return ["model count"]
+    seen = []
+    for b, l in zip(bt, lt):
+        for i, field in enumerate(FIELDS):
+            if b[i] != l[i] and field not in seen:
+                seen.append(field)
+    return seen
+
+
+def describe_drift(bt, lt):
+    """Board-vs-library detail lines for one footprint, differing entries only."""
+    out = []
+    for i in range(max(len(bt), len(lt))):
+        b = bt[i] if i < len(bt) else None
+        l = lt[i] if i < len(lt) else None
+        if b == l:
+            continue
+        for label, v in (("board", b), ("lib  ", l)):
+            if v is None:
+                out.append(f"      {label}: (no model at this index)")
+                continue
+            out.append(f"      {label}: {v[0]}  off={v[1]} scale={v[2]} "
+                       f"rot={v[3]} show={v[4]}")
+    return out
+
+
 def check_board(board_path, pcbnew, verbose=False):
     project_dir = os.path.dirname(os.path.abspath(board_path))
     libs = dict(parse_fp_lib_table(GLOBAL_FP_TABLE))
@@ -126,16 +164,16 @@ def check_board(board_path, pcbnew, verbose=False):
             detail.append(f"E4 {ref:8s} board instance has no model, library has {len(lib_models)}")
             continue
 
-        if [model_tuple(m) for m in board_models] != [model_tuple(m) for m in lib_models]:
+        bt = [model_tuple(m) for m in board_models]
+        lt = [model_tuple(m) for m in lib_models]
+        if bt != lt:
             counts["E5"] += 1
             if verbose:
                 detail.append(f"E5 {ref:8s} {fpid}")
-                for m in board_models:
-                    detail.append(f"      board: {m.m_Filename}")
-                for m in lib_models:
-                    detail.append(f"      lib:   {m.m_Filename}")
+                detail += describe_drift(bt, lt)
             else:
-                detail.append(f"E5 {ref:8s} board/library model mismatch: {fpid}")
+                detail.append(f"E5 {ref:8s} board/library model mismatch: {fpid} "
+                              f"({', '.join(drift_fields(bt, lt)) or 'model count'})")
 
     return counts, detail
 
@@ -146,6 +184,9 @@ def main():
     p.add_argument("board", nargs="?", help="path to a .kicad_pcb")
     p.add_argument("--all", action="store_true", help="check every discovered board")
     p.add_argument("--repo", help="with --all, limit to these repos (comma separated)")
+    p.add_argument("--products", action="store_true",
+                   help="with --all, skip fab panels and bench fixtures "
+                        "(matches export_step.py --products)")
     p.add_argument("--root", default=ROOT)
     p.add_argument("-v", "--verbose", action="store_true", help="list every finding")
     a = p.parse_args()
@@ -156,7 +197,7 @@ def main():
         sys.exit("needs pcbnew: run with KiCad's bundled Python")
 
     if a.all:
-        jobs = [(n, b) for _, b, n in discover(a.root, a.repo)]
+        jobs = [(n, b) for _, b, n in discover(a.root, a.repo, a.products)]
     elif a.board:
         jobs = [(os.path.basename(a.board), a.board)]
     else:

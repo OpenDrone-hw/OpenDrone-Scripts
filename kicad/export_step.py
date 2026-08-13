@@ -72,9 +72,15 @@ render_board.py. Without it the export still runs, unclipped, with a warning:
 
 KiCad may stay open: every board edit happens on a temp copy.
 
+These files are RELEASE ASSETS, not tracked source: `export/` is gitignored in
+every board repo and the set is attached to the repo's rev release with
+`gh release upload`. --products drops fab panels and bench fixtures, which
+export fine but are not something anyone fits into their own design.
+
 Usage:
   export_step.py --all                       # every board discovered under hardware/
   export_step.py --all --repo OpenRX         # one repo
+  export_step.py --all --products            # publishable boards only
   export_step.py <board.kicad_pcb> -o out.step
   export_step.py --all --dry-run
 """
@@ -125,6 +131,23 @@ TEMP_PREFIX = ".export_step_tmp_"
 SKIP_DIRS = {".history", ".git", "backups", "archive", "libs", ".pio", "__pycache__",
              "node_modules", ".venv", "export"}
 
+# A discovered board is not automatically a PRODUCT. Fab panels and bench
+# fixtures are real projects that export fine, but nobody fits one into their
+# own design, so they have no place in a published fit-check set. Product
+# identity is not derivable from the files, so it is spelled out here, in the
+# one shared place, rather than as a marker file in every board repo.
+#
+#   -panel      step-and-repeat fab panel, not a shipped board
+#   -all        multi-variant fab panel (OpenRX-all)
+#   -QC         bench QC fixture
+#   -Flashing   bench flashing jig
+#   -MotorTest  bench motor test rig
+NON_PRODUCT_SUFFIXES = ("-panel", "-all", "-qc", "-flashing", "-motortest")
+
+
+def is_product(stem):
+    return not stem.lower().endswith(NON_PRODUCT_SUFFIXES)
+
 
 def product_name(repo, stem):
     """Name the STEP after the product, derived from repo + board stem.
@@ -140,7 +163,7 @@ def product_name(repo, stem):
     return f"{repo}-{stem}"
 
 
-def discover(root, only_repo=None):
+def discover(root, only_repo=None, products_only=False):
     """Yield (repo, board_path, product_name) for every project board found."""
     found = []
     wanted = {r.strip() for r in only_repo.split(",")} if only_repo else None
@@ -159,6 +182,8 @@ def discover(root, only_repo=None):
                 if stem.startswith(TEMP_PREFIX):
                     continue
                 if not os.path.exists(os.path.join(dirpath, stem + ".kicad_pro")):
+                    continue
+                if products_only and not is_product(stem):
                     continue
                 found.append((repo, os.path.join(dirpath, fn), product_name(repo, stem)))
     return found
@@ -538,6 +563,9 @@ def main():
     p.add_argument("-o", "--output", help="output .step (single-board mode)")
     p.add_argument("--all", action="store_true", help="export every board in the manifest")
     p.add_argument("--repo", help="with --all, limit to these repos (comma separated)")
+    p.add_argument("--products", action="store_true",
+                   help="with --all, skip fab panels and bench fixtures "
+                        "(the published fit-check set)")
     p.add_argument("--preset", default="standard", choices=sorted(PRESETS),
                    help="escape hatch only; the repo standard is 'standard'")
     p.add_argument("--no-clip", dest="clip", action="store_false",
@@ -552,7 +580,7 @@ def main():
 
     if a.all:
         jobs = [(board, os.path.join(a.root, repo, "export", name + ".step"))
-                for repo, board, name in discover(a.root, a.repo)]
+                for repo, board, name in discover(a.root, a.repo, a.products)]
         if not jobs:
             sys.exit("no boards discovered")
     elif a.board:
