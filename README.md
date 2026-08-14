@@ -248,8 +248,14 @@ human has judged; the gate fails only on a new type or a higher count. After
 judging a new finding, update the baseline in the same commit that introduces
 it. Boards without a baseline entry fail closed.
 
+G6 regenerates the website board art, components.json and schematic SVGs for
+the board's product handle in the OpenDrone-Web checkout (default on,
+`--skip-web` to skip). The output is left uncommitted: merging it to the web
+repo's main deploys the shop, so that stays a reviewed PR.
+
 What it deliberately does not do: rev scope, silkscreen text, renders (KiCad
-may be open), tags, uploads, orders. See "What no script can do".
+may be open), tags, uploads, orders, the Shopify metafield push and the docs
+site rebuild. See "What no script can do".
 
 ## `kicad/check_export.py` — step 3b as a script
 

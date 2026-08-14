@@ -121,11 +121,46 @@ def gate5(board):
     return []
 
 
+WEB_REPO = os.environ.get(
+    "OPENDRONE_WEB", os.path.expanduser("~/OpenDrone/software/OpenDrone-Web"))
+
+
+def gate6(board):
+    """Website board art, components and schematic SVGs for this board's
+    product handle. In the pipeline by default; only the Shopify push and
+    the docs-site rebuild stay human-gated."""
+    cfg = os.path.join(WEB_REPO, "scripts", "boards.config.json")
+    if not os.path.exists(cfg):
+        return [f"OpenDrone-Web checkout not found at {WEB_REPO} "
+                "(set OPENDRONE_WEB, or --skip-web)"]
+    pcb = os.path.abspath(board)
+    handle = next((e["handle"] for e in json.load(open(cfg))
+                   if os.path.abspath(e["pcb"]) == pcb), None)
+    if handle is None:
+        print(f"    no product handle maps to {pcb}; skipping site art")
+        return []
+    sch = os.path.splitext(pcb)[0] + ".kicad_sch"
+    for cmd in (["node", "scripts/export-board-art.mjs", pcb, handle],
+                ["node", "scripts/export-board-art.mjs", pcb, handle,
+                 "--components-only"],
+                ["node", "scripts/export-schematics.mjs", sch, handle]):
+        r = run(cmd, cwd=WEB_REPO)
+        if r.returncode:
+            return [f"{' '.join(cmd[1:3])} failed: "
+                    f"{(r.stderr or r.stdout).strip()[-200:]}"]
+    print(f"    site art: public/boards/{handle}/ and "
+          f"public/schematics/{handle}/ in OpenDrone-Web (uncommitted; "
+          "review and PR, merging deploys the shop)")
+    return []
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("board")
     ap.add_argument("--skip-fab-export", action="store_true",
                     help="check the existing production set instead of re-exporting")
+    ap.add_argument("--skip-web", action="store_true",
+                    help="skip the website art regeneration")
     a = ap.parse_args()
     import tempfile
     gates = [("G1 design gates (ERC/DRC vs baseline)", lambda t: gate1(a.board, t)),
@@ -133,6 +168,8 @@ def main():
              ("G3 fab set + export check", lambda t: gate3(a.board, a.skip_fab_export)),
              ("G4 STEP export", lambda t: gate4(a.board)),
              ("G5 schematic PDF", lambda t: gate5(a.board))]
+    if not a.skip_web:
+        gates.append(("G6 website board art", lambda t: gate6(a.board)))
     with tempfile.TemporaryDirectory() as tmp:
         for name, fn in gates:
             print(f"== {name}")
