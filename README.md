@@ -52,6 +52,7 @@ An agent can run most of this unattended. The column says which:
 | 5 | Schematic PDFs | agent |
 | 6 | Renders | agent, **after Stan quits KiCad** |
 | 7 | Docs and firmware | agent drafts, Stan reads |
+| 7b | Compliance evidence and DoC | agent drafts, Stan signs |
 | 8 | Tag, release, assets | agent, one go-ahead for the push |
 | 9 | Website and docs site | agent, one go-ahead for Shopify |
 
@@ -167,6 +168,19 @@ the revision closed. Verify against the design files, not against the other
 docs. Then confirm the committed firmware still matches the board: a revision
 that moves no GPIO net leaves the Betaflight uf2 and the AM32 target valid, and
 that is a netlist diff, not an assumption.
+
+**7b. Compliance evidence and DoC.** A revision that ships to a customer ships
+with a Declaration of Conformity issued for that revision, re-issued when the
+revision changes. The standards-to-evidence matrix, run status and the scope
+argument live in `testing/OpenDrone-Testing/Compliance/README.md`; the DoC and
+technical file templates and the company-side records (registrations,
+insurance) live in the incutec vault under `compliance/`. Per revision: diff
+against the last shipped revision and record in the technical file whether the
+change touches EMC-relevant circuitry (switchers, clocks, the RF path, I/O
+filtering); an untouched circuit keeps its previous evidence, a touched one
+re-runs the affected pre-screens. For OpenRX the DoC pins the firmware version,
+so a firmware change re-issues it too. Stan signs; an agent never signs or
+publishes a DoC.
 
 **8. Tag and publish.** Tag `revN`, then attach the fab zip, the STEP set and
 the schematic PDFs to the release. Every release so far carries zero assets.
