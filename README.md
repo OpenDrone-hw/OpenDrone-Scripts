@@ -548,6 +548,19 @@ neither current board, and its default `--expand` list is OpenFC sheet names, so
 on another board large nets get truncated silently. Pass paths explicitly and
 check the output against the board you pointed at.
 
+## `kicad/set_edgecuts_width.py` — normalise Edge.Cuts stroke width
+
+Sets every Edge.Cuts graphic on a `.kicad_pcb` to one stroke width, 0.05 mm by
+default. Dry-run by default, `--write` to apply; makes a `.bak` copy first.
+Moved from the OpenFC repos, where both copies were identical and generic.
+
+```bash
+python3 kicad/set_edgecuts_width.py <board.kicad_pcb> --write
+```
+
+It edits the file as text, so it is the one exception to the no-raw-edit rule:
+stroke widths only, nothing structural. Close KiCad before running it.
+
 ## `esc/esc_qc_gen.py` — ESC-QC fixture generator
 
 Rebuilds the `20x20-ESC-QC` fixture for another OpenESC. That board is one
@@ -605,6 +618,9 @@ with the target ESC's outline, `--retext` fixes silk labels.
 Not everything shared a name by accident. These are board-specific and belong
 where they are:
 
+- `OpenFC-Lite*/hardware/tools/add_mpn_fields.py` — looks generic (LCSC → MPN
+  via jlcsearch) but hardcodes the OpenFC root-sheet list to exclude stale
+  orphan sheets. Parameterize that list before moving it here.
 - `OpenFC-Lite*/hardware/tools/audit_design.py` — exists in both OpenFC repos and
   the two copies have **already drifted**. It takes no arguments at all and
   hardcodes refdes and GPIO maps; the Mini copy is annotated stale against Rev 2
