@@ -121,7 +121,9 @@ ProcessThread(wx=None, cli=path, nonInteractive=True, openBrowser=False,
                        AUTO_FILL_OPT: True, NO_BACKUP_OPT: True, ...}).join()
 ```
 
-**3b. Check the export against the design. Every time.** The plugin is a third
+**3b. Check the export against the design. Every time.** Scripted:
+`python3 kicad/check_export.py <board.kicad_pcb>` runs the three comparisons
+below against the set in `production/` and fails on C1/C3. The plugin is a third
 party tool with its own translation table and its own naming rules, the export
 is the one artifact the fab actually builds from, and a stale or wrong set looks
 exactly like a good one. Three comparisons, all mechanical:
@@ -224,11 +226,62 @@ are not tooling gaps, so do not try to route around them:
 - **Bench validation and product photos.** A render is not a photo and an
   export is not a working board.
 
-What is still missing on the tooling side is the wrapper that runs the steps in
-order and refuses to continue when a gate fails, and the export check of step 3b
-as a script rather than a habit. Both are worth writing before the next
-revision: `30x30-Rev3.zip` matches no committed state of that board, and nothing
-in the process was in a position to notice.
+Both gaps this section used to name are closed: `kicad/release.py` runs steps
+1 to 5 as a gate chain and refuses to continue past a failure, and
+`kicad/check_export.py` is step 3b as a script. Its first run caught a real
+one: Lite-UFL's J1 had no usable LCSC number and would have shipped without
+its U.FL connector.
+
+## `kicad/release.py` — the release gate chain, steps 1-5
+
+One board through ERC/DRC-vs-baseline, model preflight, fab export + export
+check, STEP and schematic PDF; the first failed gate stops the run and
+nothing downstream is generated.
+
+```bash
+python3 kicad/release.py <board.kicad_pcb>                    # full run
+python3 kicad/release.py <board.kicad_pcb> --skip-fab-export  # keep the existing set
+```
+
+`kicad/release-baselines.json` holds the ERC/DRC violation types and counts a
+human has judged; the gate fails only on a new type or a higher count. After
+judging a new finding, update the baseline in the same commit that introduces
+it. Boards without a baseline entry fail closed.
+
+What it deliberately does not do: rev scope, silkscreen text, renders (KiCad
+may be open), tags, uploads, orders. See "What no script can do".
+
+## `kicad/check_export.py` — step 3b as a script
+
+Checks a Fabrication Toolkit set in `production/` against the board and
+schematic: designators vs board (C1), board-only refs vs schematic (C2,
+informational), per-LCSC quantities (C3, catches a part silently missing its
+LCSC field), and footprints the toolkit rotation table does not know (C4,
+informational). C1/C3 are hard failures.
+
+```bash
+python3 kicad/check_export.py <board.kicad_pcb>
+```
+
+## `kicad/fab_export.py` — headless Fabrication Toolkit run
+
+The GUI plugin driven from the command line, options read from the board's
+`fabrication-toolkit-options.json`. Needs KiCad's bundled python.
+
+```bash
+$KPY kicad/fab_export.py <board.kicad_pcb> [--name ARCHIVE_NAME]
+```
+
+## `kicad/wrl_to_step.py` — rebuild a STEP from the trusted wrl
+
+The E6 fix path: when the .step beside a .wrl is a different part and
+upstream ships the same wrong file, the .wrl the 3D viewer renders is the
+geometry of record. Produces a tessellated STEP solid, exact dimensions,
+faceted faces, no colors. Needs `pip install cadquery-ocp`, system python.
+
+```bash
+python3 kicad/wrl_to_step.py model.wrl -o model.step
+```
 
 ## `kicad/export_step.py` — standardized STEP exports
 

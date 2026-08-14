@@ -1,0 +1,130 @@
+{
+ "_comment": "Violation types and counts judged acceptable by Stan on 2026-08-14. release.py fails a board only on a type not listed here, or a count above the listed one.",
+ "boards": {
+  "OpenESC-20x20/hardware/4in1-mini": {
+   "erc": {
+    "lib_symbol_issues:warning": 39,
+    "lib_symbol_mismatch:warning": 4,
+    "multiple_net_names:warning": 3,
+    "pin_not_driven:error": 22,
+    "pin_to_pin:error": 1,
+    "pin_to_pin:warning": 235,
+    "power_pin_not_driven:error": 3
+   },
+   "drc": {
+    "lib_footprint_mismatch:warning": 6,
+    "mirrored_text_on_front_layer:warning": 1
+   }
+  },
+  "OpenESC-30x30/hardware/4in1": {
+   "erc": {
+    "footprint_link_issues:warning": 6,
+    "lib_symbol_issues:warning": 40,
+    "lib_symbol_mismatch:warning": 3,
+    "multiple_net_names:warning": 3,
+    "pin_not_driven:error": 22,
+    "pin_to_pin:error": 1,
+    "pin_to_pin:warning": 235,
+    "power_pin_not_driven:error": 3
+   },
+   "drc": {
+    "connection_width:warning": 1,
+    "copper_sliver:warning": 1
+   }
+  },
+  "OpenFC-Lite/hardware/OpenFC": {
+   "erc": {
+    "lib_symbol_issues:warning": 2,
+    "lib_symbol_mismatch:warning": 11,
+    "multiple_net_names:warning": 4,
+    "no_connect_dangling:warning": 1,
+    "pin_not_driven:error": 1,
+    "pin_to_pin:warning": 152,
+    "power_pin_not_driven:error": 8
+   },
+   "drc": {
+    "clearance:error": 1,
+    "hole_clearance:error": 3,
+    "lib_footprint_mismatch:warning": 7,
+    "nonmirrored_text_on_back_layer:warning": 1,
+    "solder_mask_bridge:warning": 2,
+    "track_dangling:warning": 2
+   }
+  },
+  "OpenFC-Lite-Mini/hardware/OpenFC": {
+   "erc": {
+    "lib_symbol_mismatch:warning": 10,
+    "multiple_net_names:warning": 4,
+    "pin_to_pin:warning": 134,
+    "power_pin_not_driven:error": 8,
+    "unconnected_wire_endpoint:warning": 3
+   },
+   "drc": {
+    "annular_width:error": 2,
+    "clearance:error": 1,
+    "nonmirrored_text_on_back_layer:warning": 1,
+    "padstack:warning": 2
+   }
+  },
+  "OpenRX/OpenRX-Lite/OpenRX-Lite": {
+   "erc": {
+    "endpoint_off_grid:warning": 3,
+    "lib_symbol_issues:warning": 8,
+    "pin_to_pin:error": 1,
+    "pin_to_pin:warning": 41,
+    "power_pin_not_driven:error": 1
+   },
+   "drc": {
+    "copper_edge_clearance:warning": 10,
+    "courtyards_overlap:warning": 1,
+    "lib_footprint_mismatch:warning": 8,
+    "shorting_items:error": 4
+   }
+  },
+  "OpenRX/OpenRX-Lite-UFL/OpenRX-Lite-UFL": {
+   "erc": {
+    "endpoint_off_grid:warning": 3,
+    "lib_symbol_issues:warning": 7,
+    "pin_to_pin:error": 1,
+    "pin_to_pin:warning": 38,
+    "power_pin_not_driven:error": 1
+   },
+   "drc": {
+    "copper_edge_clearance:warning": 10,
+    "courtyards_overlap:warning": 1,
+    "lib_footprint_mismatch:warning": 9,
+    "shorting_items:error": 8,
+    "solder_mask_bridge:warning": 1
+   }
+  },
+  "OpenRX/OpenRX-Mono/OpenRX-Mono": {
+   "erc": {
+    "endpoint_off_grid:warning": 3,
+    "lib_symbol_issues:warning": 10,
+    "multiple_net_names:warning": 1,
+    "pin_to_pin:error": 1,
+    "pin_to_pin:warning": 41,
+    "power_pin_not_driven:error": 1
+   },
+   "drc": {
+    "copper_edge_clearance:warning": 10,
+    "lib_footprint_mismatch:warning": 8
+   }
+  },
+  "OpenRX/OpenRX-Gemini/OpenRX-Gemini": {
+   "erc": {
+    "endpoint_off_grid:warning": 3,
+    "lib_symbol_issues:warning": 11,
+    "multiple_net_names:warning": 1,
+    "pin_to_pin:error": 1,
+    "pin_to_pin:warning": 69,
+    "power_pin_not_driven:error": 1
+   },
+   "drc": {
+    "copper_edge_clearance:warning": 10,
+    "courtyards_overlap:warning": 2,
+    "lib_footprint_mismatch:warning": 20
+   }
+  }
+ }
+}
