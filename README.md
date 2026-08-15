@@ -185,27 +185,39 @@ so a firmware change re-issues it too. Stan signs; an agent never signs or
 publishes a DoC.
 
 **8. Tag and publish.** Tag `revN`, then attach the fab zip, the STEP set and
-the schematic PDFs to the release. Every release so far carries zero assets.
+the schematic PDFs to the release, named so the website can read them:
+`<Repo>-<rev>-fab.zip` (the JLCPCB set), `<Repo>-<rev>.step`,
+`<Repo>-<rev>-schematic.pdf`. `OpenDrone-Web/scripts/sync-downloads.mjs`
+maps assets to product-page download kinds by these shapes and skips anything
+it does not recognise, so a differently named asset is invisible to the shop.
+The rev 3.1 / 2.1 releases predate the convention and are named freely.
 
 ```bash
 gh release create rev3.1 --title "OpenX Rev 3.1" --notes-file notes.md
-gh release upload rev3.1 export/*.step hardware/production/<Rev>.zip
+gh release upload rev3.1 export/OpenX-rev3.1.step hardware/production/OpenX-rev3.1-fab.zip \
+    OpenX-rev3.1-schematic.pdf
 ```
 
-**9. Website and docs site.** `OpenDrone-Web` regenerates from the board files
-through `scripts/boards.config.json`, which maps a product handle to a
-`.kicad_pcb` absolute path:
+**9. Website and docs site.** `OpenDrone-Web` is a maintained mirror of the
+board repos: art from the board files, specs from the README tables, release
+assets from GitHub. `scripts/boards.config.json` and
+`scripts/repo-sync.config.json` map product handles to the checkouts under
+`~/OpenDrone/hardware` (`OPENDRONE_HARDWARE` overrides the root):
 
 ```bash
 cd ~/OpenDrone/software/OpenDrone-Web
 npm run gen:board-art     # public/boards/<handle>/{front,back}.png, board.svg
 npm run gen:components    # public/boards/<handle>/components.json
 npm run gen:schematics    # public/schematics/<handle>/*.svg + manifest.json
+npm run sync:specs        # README "## Specifications" -> content/products/<handle>.json
+npm run sync:downloads    # release assets -> downloads array; --check only until the chapter is wanted
 ```
 
-Then the product JSON in `content/products/`, the Shopify metafields, and
-`OpenDrone-Docs` (`build.py`, whose `build/*-groups.json` pin GitHub raw image
-URLs by filename, so a renamed render breaks the docs site silently).
+`sync:specs` refuses to write from a dirty or stale checkout. OpenRX is the one
+hand-maintained product JSON (one repo, four boards). All of it lands as one
+reviewed PR: merging deploys the shop. Then `OpenDrone-Docs` (`build.py`, whose
+`build/*-groups.json` pin GitHub raw image URLs by filename, so a renamed
+render breaks the docs site silently).
 
 ### What no script can do
 
