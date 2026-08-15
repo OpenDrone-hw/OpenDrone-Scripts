@@ -241,7 +241,7 @@ Both gaps this section used to name are closed: `kicad/release.py` runs steps
 one: Lite-UFL's J1 had no usable LCSC number and would have shipped without
 its U.FL connector.
 
-## `kicad/release.py` — the release gate chain, steps 1-5
+## `kicad/release.py`: the release gate chain, steps 1-5
 
 One board through ERC/DRC-vs-baseline, model preflight, fab export + export
 check, STEP and schematic PDF; the first failed gate stops the run and
@@ -266,7 +266,7 @@ What it deliberately does not do: rev scope, silkscreen text, renders (KiCad
 may be open), tags, uploads, orders, the Shopify metafield push and the docs
 site rebuild. See "What no script can do".
 
-## `kicad/check_export.py` — step 3b as a script
+## `kicad/check_export.py`: step 3b as a script
 
 Checks a Fabrication Toolkit set in `production/` against the board and
 schematic: designators vs board (C1), board-only refs vs schematic (C2,
@@ -278,7 +278,7 @@ informational). C1/C3 are hard failures.
 python3 kicad/check_export.py <board.kicad_pcb>
 ```
 
-## `kicad/fab_export.py` — headless Fabrication Toolkit run
+## `kicad/fab_export.py`: headless Fabrication Toolkit run
 
 The GUI plugin driven from the command line, options read from the board's
 `fabrication-toolkit-options.json`. Needs KiCad's bundled python.
@@ -287,7 +287,7 @@ The GUI plugin driven from the command line, options read from the board's
 $KPY kicad/fab_export.py <board.kicad_pcb> [--name ARCHIVE_NAME]
 ```
 
-## `kicad/wrl_to_step.py` — rebuild a STEP from the trusted wrl
+## `kicad/wrl_to_step.py`: rebuild a STEP from the trusted wrl
 
 The E6 fix path: when the .step beside a .wrl is a different part and
 upstream ships the same wrong file, the .wrl the 3D viewer renders is the
@@ -298,7 +298,7 @@ faceted faces, no colors. Needs `pip install cadquery-ocp`, system python.
 python3 kicad/wrl_to_step.py model.wrl -o model.step
 ```
 
-## `kicad/export_step.py` — standardized STEP exports
+## `kicad/export_step.py`: standardized STEP exports
 
 One command exports every board in every repo to `<repo>/export/<Product>.step`:
 
@@ -382,7 +382,7 @@ stay open. An unresolved 3D model is only a warning to kicad-cli, which still
 exits 0, so the script reports missing models explicitly rather than shipping a
 half-empty board.
 
-## `kicad/check_models.py` — 3D model pre-flight
+## `kicad/check_models.py`: 3D model pre-flight
 
 kicad-cli treats an unresolvable 3D model as a warning and still exits 0, so a
 board that has lost half its components exports "successfully" as a bare slab.
@@ -510,7 +510,7 @@ not the filename. Re-exporting for a new revision means a new tag and a new
 release, never overwriting an old asset, so a user who built around rev3 can
 still fetch exactly what they measured against.
 
-## `kicad/render_board.py` — standardized board renders
+## `kicad/render_board.py`: standardized board renders
 
 The clean board PNGs used in every OpenDrone README: vias and solder paste
 stripped so copper pads read as gold rather than grey paste, no floor shadow,
@@ -548,7 +548,7 @@ transparent background. KiCad 10's `--use-board-stackup-colors false` throws
 `bad_any_cast` and `BOARD_STACKUP` is not exposed in pcbnew, so the soldermask
 colour cannot be overridden here; renders use the board's own mask colour.
 
-## `kicad/packaging_art.py` — flat vector board art for packaging
+## `kicad/packaging_art.py`: flat vector board art for packaging
 
 Single-colour gold-on-white vector art of a board's front/back for the black and
 gold retail packaging. Not a 3D render: it composites kicad-cli SVG plots (pads,
@@ -603,7 +603,7 @@ behind the clip group, so with `--no-clip` or on a board with no outline they ar
 visible and they set the page: OpenRX-Lite plots 20.29 x 24.08 mm for a
 10.05 x 11.55 mm board.
 
-## `kicad/dimension_overlay.py` — dimensioned README image
+## `kicad/dimension_overlay.py`: dimensioned README image
 
 Takes a transparent square render and produces the dark-background dimensioned
 image, given the board's width and length in mm.
@@ -630,7 +630,7 @@ neither current board, and its default `--expand` list is OpenFC sheet names, so
 on another board large nets get truncated silently. Pass paths explicitly and
 check the output against the board you pointed at.
 
-## `kicad/set_edgecuts_width.py` — normalise Edge.Cuts stroke width
+## `kicad/set_edgecuts_width.py`: normalise Edge.Cuts stroke width
 
 Sets every Edge.Cuts graphic on a `.kicad_pcb` to one stroke width, 0.05 mm by
 default. Dry-run by default, `--write` to apply; makes a `.bak` copy first.
@@ -650,20 +650,20 @@ stroke widths only, nothing structural. Close KiCad before running it.
 Not everything shared a name by accident. These are board-specific and belong
 where they are:
 
-- `OpenFC-Lite*/hardware/tools/add_mpn_fields.py` — looks generic (LCSC → MPN
+- `OpenFC-Lite*/hardware/tools/add_mpn_fields.py`: looks generic (LCSC → MPN
   via jlcsearch) but hardcodes the OpenFC root-sheet list to exclude stale
   orphan sheets. Parameterize that list before moving it here.
-- `OpenFC-Lite*/hardware/tools/audit_design.py` — exists in both OpenFC repos and
+- `OpenFC-Lite*/hardware/tools/audit_design.py`: exists in both OpenFC repos and
   the two copies have **already drifted**. It takes no arguments at all and
   hardcodes refdes and GPIO maps; the Mini copy is annotated stale against Rev 2
   (Rev 1 U36/QFN-80/GPIO0-47 vs Rev 2 U10/QFN-60/GPIO0-29). Deduplicating it
   means parameterizing that map first, otherwise a shared copy silently reports
   against the wrong board.
-- `OpenFC-Lite-Mini/hardware/tools/add_emc_note.py` — Mini only.
+- `OpenFC-Lite-Mini/hardware/tools/add_emc_note.py`: Mini only.
 - `OpenESC-20x20/hardware/tools/esc_thermal.py`, `flash_openesc20.sh`.
-- `OpenRX/verification/` — BOM and GPIO continuity checks tied to that board set.
-- `OpenDrone-Testing/Bench/` — drives bench hardware, belongs with the test records.
-- `OpenDrone-Web/scripts/` — that app's own build and deploy tooling.
-- `KiCad-Library/tools/` (`build-parts-index.py`, `bump-all.sh`) — operates on that
+- `OpenRX/verification/`: BOM and GPIO continuity checks tied to that board set.
+- `OpenDrone-Testing/Bench/`: drives bench hardware, belongs with the test records.
+- `OpenDrone-Web/scripts/`: that app's own build and deploy tooling.
+- `KiCad-Library/tools/` (`build-parts-index.py`, `bump-all.sh`): operates on that
   repo's own contents and is vendored into 7 board repos as a submodule. The 7
   extra copies are submodule checkouts, not duplicates. Do not edit in place.
