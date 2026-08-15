@@ -3,9 +3,7 @@
 Tooling shared across the OpenDrone hardware repos. Everything here spans more
 than one repo. Scripts that only ever serve a single repo stay in that repo.
 
-`kicad/` is board-agnostic: give it any `.kicad_pcb`. `esc/` is board-*family*
-tooling: it works on any OpenESC, not on any board, and it lives here because it
-reads a board in one repo and writes into another.
+`kicad/` is board-agnostic: give it any `.kicad_pcb`.
 
 Before this repo existed these scripts lived in an unversioned `software/tools/`
 directory, and the generic KiCad helpers were duplicated byte-for-byte between
@@ -17,7 +15,6 @@ other. One copy, under git, is the point.
 | Dir | Contents |
 |---|---|
 | `kicad/` | Board exports, renders, and generic KiCad file surgery |
-| `esc/` | ESC test-fixture and jig generation |
 
 ## Interpreter
 
@@ -645,56 +642,6 @@ python3 kicad/set_edgecuts_width.py <board.kicad_pcb> --write
 
 It edits the file as text, so it is the one exception to the no-raw-edit rule:
 stroke widths only, nothing structural. Close KiCad before running it.
-
-## `esc/esc_qc_gen.py` — ESC-QC fixture generator
-
-Rebuilds the `20x20-ESC-QC` fixture for another OpenESC. That board is one
-negative footprint carrying the ESC contact pads plus all the board geometry
-(100 x 100 outline, four M3 corner holes, and an ESC-shaped pocket cut into
-Edge.Cuts), with 44 edge solder lands around it. This reproduces that from the
-ESC design, read-only, so the contact geometry cannot drift from the board under
-test.
-
-```bash
-cd ~/OpenDrone/hardware/OpenESC-30x30/30x30-ESC-QC
-$KPY ~/OpenDrone/software/OpenDrone-Scripts/esc/esc_qc_gen.py ../hardware/4in1.kicad_pcb \
-    --dut 4in1ESC30x30 --lib ESC-QC.pretty --out 30x30-ESC-QC.kicad_pcb
-```
-
-Emits `<dut>-negative.kicad_mod` plus local `TP_Pad_*` lands, and places the
-negative and all 44 edge pads (F.Cu and B.Cu). **Nothing is routed.** Edge pad
-positions are lifted from the 20x20 board and stay put, since the fixture is
-100 x 100 for every ESC. The pocket is derived from the ESC's own pads and
-reproduces the 20x20 pocket to 0.051 mm worst case (Y edges; X edges 0.003 mm).
-
-Regenerating reproduces the committed 30x30 fixture exactly: all 34 contact pads
-and all 44 edge pads land within 0.000000 mm, and the negative footprint is
-byte-identical once UUIDs are stripped.
-
-**Footgun:** the script writes `<dut>-negative.kicad_mod` (hyphen) but the
-30x30 board references `4in1ESC30x30_negative` (underscore, a hand-rename).
-Re-running overwrites the unused hyphen file and silently leaves the board
-alone, which is the opposite of the "regeneration destroys routing" warning.
-Reconcile the names before trusting a regeneration.
-
-## `esc/esc_jig_retarget.py` — move an existing jig to another ESC
-
-Keeps a jig's layout exactly as drawn (outline, mounting holes, headers, banana
-jacks, silkscreen) and moves only the pogo pins that touch the ESC. Used to make
-the 30x30 flashing station out of the fabbed 20x20 one.
-
-```bash
-$KPY esc/esc_jig_retarget.py 20x20-ESC-Flashing.kicad_pcb ../hardware/4in1.kicad_pcb \
-    --dut 4in1ESC30x30 --strip-tracks --swap-outline 30 --retext "20x20=30x30" \
-    --out 30x30-ESC-Flashing.kicad_pcb
-```
-
-Pins are matched by net name, so the template's naming drives placement:
-`/SWDn_CLK` and `/SWDn_DIO` go to that channel's PA14 and PA13 test points,
-`/VBAT` and `GND` to the battery pads. Channel numbers come from the ESC
-schematic sheets, not from position. `--strip-tracks` clears the old routing,
-`--swap-outline R` replaces silkscreen graphics within R mm of the jig centre
-with the target ESC's outline, `--retext` fixes silk labels.
 
 ---
 
