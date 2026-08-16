@@ -15,6 +15,7 @@ other. One copy, under git, is the point.
 | Dir | Contents |
 |---|---|
 | `kicad/` | Board exports, renders, and generic KiCad file surgery |
+| `kicad/multiboard/` | KiCad 10 action plugin: several boards from one schematic (OpenDrone fork of Kicad-Multi-PCB) |
 
 ## Interpreter
 
@@ -286,6 +287,47 @@ The GUI plugin driven from the command line, options read from the board's
 ```bash
 $KPY kicad/fab_export.py <board.kicad_pcb> [--name ARCHIVE_NAME]
 ```
+
+## `kicad/multiboard/`: several boards from one schematic
+
+Fork of [Eliot-Abramo/Kicad-Multi-PCB](https://github.com/Eliot-Abramo/Kicad-Multi-PCB)
+(MIT, upstream commit `175cd7d`, licence kept in `LICENSE.upstream`). One root
+schematic, N `.kicad_pcb` files; a footprint belongs to the board it was placed
+on first, and "Update" pulls into a board only its own footprints plus symbols
+that are on no board yet. KiCad's own Update PCB from Schematic cannot do this,
+it imports the whole schematic into every board. First user: OpenAIO (Base
+carrier + Core hat).
+
+```sh
+sh kicad/multiboard/install.sh            # symlink into KiCad 10's plugin dir, once per machine
+KPY=/Applications/KiCad/KiCad.app/Contents/Frameworks/Python.framework/Versions/Current/bin/python3
+$KPY kicad/multiboard/update.py <project dir> [board ...]   # headless Update, boards closed
+```
+
+Changed against upstream, every hunk marked `OpenDrone fork` in the code:
+
+- `layout: "flat"` in `.kicad_multiboard.json`: the board projects live next to
+  the root project instead of `boards/<name>/`, so `${KIPRJMOD}` and the lib
+  tables and 3D models resolve without copies. Linking a sheet onto itself is
+  refused; lib tables are not rewritten in flat layout.
+- Relative symlinks for the schematic links (git stores them, a clone comes up
+  linked); hardlink is the fallback. `default_board` receives unplaced parts in
+  an all-boards `update.py` run; a one-board run (and the GUI Update button)
+  keeps upstream semantics, the named board takes them.
+- Full footprint paths (`/sheet uuid/symbol uuid`, what KiCad writes) instead of
+  the bare symbol uuid, so cross-probing and a native update still match.
+  Upstream also read the wrong netlist tag and never set a path at all.
+- Loaded footprints keep their library nickname (upstream re-"replaced" every
+  new part on the next update).
+- Finds `kicad-cli` inside KiCad.app (GUI apps on macOS have no shell PATH).
+- `generate_blocks: false` skips the block footprints; `work_dir` moves the log
+  and temp netlist into a gitignored directory. Board delete never removes a
+  directory that is not `boards/<name>/`.
+
+Requires the schematic file's root uuid to equal `top_level_sheets[].uuid` in
+the `.kicad_pro`; KiCad 10's kicad-cli otherwise resolves shared sheets to
+their default references (upstream KiCad #24409). The plugin's netlist comes
+from kicad-cli, so it inherits that.
 
 ## `kicad/wrl_to_step.py`: rebuild a STEP from the trusted wrl
 
