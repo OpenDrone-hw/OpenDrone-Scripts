@@ -330,13 +330,40 @@ class MultiBoardManager:
         """Parse a KiCad footprint library table file."""
         try:
             content = path.read_text(encoding="utf-8", errors="ignore")
+            env = self._kicad_path_vars()
             for match in RE_FP_LIB_ENTRY.finditer(content):
                 nick, uri = match.group(1), match.group(2)
                 expanded = uri.replace("${KIPRJMOD}", str(self.project_dir))
+                # OpenDrone fork: expand KiCad path variables (Preferences >
+                # Configure Paths) and environment variables, e.g. ${OPENDRONE_LIB}
+                expanded = re.sub(r"\$\{([A-Za-z0-9_]+)\}", lambda m: env.get(m.group(1), m.group(0)), expanded)
                 if "${" not in expanded:
                     self._fp_lib_paths[nick] = Path(expanded)
+                else:
+                    self._log(f"lib table: unresolved variable in {nick}: {uri}")
         except Exception:
             pass
+
+    def _kicad_path_vars(self) -> Dict[str, str]:
+        """OpenDrone fork: KiCad's configured path variables (kicad_common.json
+        of every installed major version, newest first) under the environment."""
+        env: Dict[str, str] = {}
+        bases = [Path.home() / "Library" / "Preferences" / "kicad",
+                 Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "kicad",
+                 Path(os.environ.get("APPDATA", "")) / "kicad"]
+        for base in bases:
+            if not base.exists():
+                continue
+            for ver in sorted(base.iterdir(), reverse=True):
+                common = ver / "kicad_common.json"
+                if common.exists():
+                    try:
+                        for k, v in json.load(open(common)).get("environment", {}).get("vars", {}).items():
+                            env.setdefault(k, v)
+                    except Exception:
+                        pass
+        env.update({k: v for k, v in os.environ.items() if k not in env})
+        return env
 
     # =========================================================================
     # KiCad CLI (cached)
