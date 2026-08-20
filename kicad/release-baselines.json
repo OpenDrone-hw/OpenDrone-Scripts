@@ -1,5 +1,5 @@
 {
- "_comment": "Violation types and counts judged acceptable by Stan on 2026-08-14. release.py fails a board only on a type not listed here, or a count above the listed one.",
+ "_comment": "Violation types and counts judged acceptable by the maintainer on 2026-08-14. release.py fails a board only on a type not listed here, or a count above the listed one.",
  "boards": {
   "OpenESC-20x20/hardware/4in1-mini": {
    "erc": {

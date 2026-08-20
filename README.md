@@ -41,16 +41,16 @@ An agent can run most of this unattended. The column says which:
 
 | | Step | Who |
 |---|---|---|
-| 0 | Rev number and scope | Stan |
-| 1 | ERC, DRC, parity, 3D model preflight | agent, new violation types to Stan |
+| 0 | Rev number and scope | maintainer |
+| 1 | ERC, DRC, parity, 3D model preflight | agent, new violation types to the maintainer |
 | 2 | Revision strings | agent, except the silkscreen |
 | 3 | JLCPCB fab set | agent |
 | 3b | Export checked against board and schematic | agent |
 | 4 | STEP set | agent |
 | 5 | Schematic PDFs | agent |
-| 6 | Renders | agent, **after Stan quits KiCad** |
-| 7 | Docs and firmware | agent drafts, Stan reads |
-| 7b | Compliance evidence and DoC | agent drafts, Stan signs |
+| 6 | Renders | agent, **after the maintainer quits KiCad** |
+| 7 | Docs and firmware | agent drafts, maintainer reads |
+| 7b | Compliance evidence and DoC | agent drafts, maintainer signs |
 | 8 | Tag, release, assets | agent, one go-ahead for the push |
 | 9 | Website and docs site | agent, one go-ahead for Shopify |
 
@@ -92,7 +92,7 @@ copy.
 the board's `fabrication-toolkit-options.json`, the silkscreen rev text if the
 board has one, the README status line, and the tag. Three of those are plain
 text files. The silkscreen is not: it means writing the `.kicad_pcb` through
-pcbnew, so it stays Stan's, and only OpenESC-20x20 carries one today.
+pcbnew, so it stays the maintainer's, and only OpenESC-20x20 carries one today.
 
 **3. JLCPCB fab set.** The Fabrication Toolkit is a GUI plugin, but it runs
 headless and its output is identical: on OpenRX-Lite the BOM, designator and
@@ -179,8 +179,8 @@ against the last shipped revision and record in the technical file whether the
 change touches EMC-relevant circuitry (switchers, clocks, the RF path, I/O
 filtering); an untouched circuit keeps its previous evidence, a touched one
 re-runs the affected pre-screens. For OpenRX the DoC pins the firmware version,
-so a firmware change re-issues it too. Stan signs; an agent never signs or
-publishes a DoC.
+so a firmware change re-issues it too. The maintainer signs; an agent never
+signs or publishes a DoC.
 
 **8. Tag and publish.** Tag `revN`, then attach the fab zip, the STEP set and
 the schematic PDFs to the release, named so the website can read them:
