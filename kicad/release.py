@@ -134,8 +134,12 @@ def gate6(board):
         return [f"OpenDrone-Web checkout not found at {WEB_REPO} "
                 "(set OPENDRONE_WEB, or --skip-web)"]
     pcb = os.path.abspath(board)
-    handle = next((e["handle"] for e in json.load(open(cfg))
-                   if os.path.abspath(e["pcb"]) == pcb), None)
+    cfg_data = json.load(open(cfg))
+    root = os.path.expanduser(os.environ.get("OPENDRONE_HARDWARE",
+                                             cfg_data.get("root", "")))
+    handle = next((e["handle"] for e in cfg_data["boards"]
+                   if os.path.abspath(os.path.join(root, e["pcb"])) == pcb),
+                  None)
     if handle is None:
         print(f"    no product handle maps to {pcb}; skipping site art")
         return []

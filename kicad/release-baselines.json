@@ -1,31 +1,35 @@
 {
- "_comment": "Violation types and counts judged acceptable by the maintainer on 2026-08-14. release.py fails a board only on a type not listed here, or a count above the listed one.",
+ "_comment": "Violation types and counts judged acceptable by the maintainer. 2026-08-14 initial set; 2026-08-22 rev3.2 CSA-filter counts for both ESC boards accepted by Stan ('ship as is').",
  "boards": {
   "OpenESC-20x20/hardware/4in1-mini": {
    "erc": {
-    "lib_symbol_issues:warning": 39,
+    "lib_symbol_issues:warning": 44,
     "lib_symbol_mismatch:warning": 4,
     "multiple_net_names:warning": 3,
-    "pin_not_driven:error": 22,
+    "pin_not_driven:error": 24,
     "pin_to_pin:error": 1,
-    "pin_to_pin:warning": 235,
-    "power_pin_not_driven:error": 3
+    "pin_to_pin:warning": 239,
+    "power_pin_not_driven:error": 3,
+    "endpoint_off_grid:warning": 15,
+    "footprint_link_issues:warning": 1
    },
    "drc": {
     "lib_footprint_mismatch:warning": 6,
-    "mirrored_text_on_front_layer:warning": 1
+    "mirrored_text_on_front_layer:warning": 1,
+    "lib_footprint_issues:warning": 1
    }
   },
   "OpenESC-30x30/hardware/4in1": {
    "erc": {
     "footprint_link_issues:warning": 6,
-    "lib_symbol_issues:warning": 40,
+    "lib_symbol_issues:warning": 45,
     "lib_symbol_mismatch:warning": 3,
     "multiple_net_names:warning": 3,
-    "pin_not_driven:error": 22,
+    "pin_not_driven:error": 24,
     "pin_to_pin:error": 1,
-    "pin_to_pin:warning": 235,
-    "power_pin_not_driven:error": 3
+    "pin_to_pin:warning": 239,
+    "power_pin_not_driven:error": 3,
+    "endpoint_off_grid:warning": 26
    },
    "drc": {
     "connection_width:warning": 1,
