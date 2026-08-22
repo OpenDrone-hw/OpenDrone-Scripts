@@ -106,6 +106,11 @@ STANDARD = ["--include-pads", "--include-silkscreen"]
 PRESETS = {
     "standard": STANDARD,
     "body": [],
+    # Outline only: board body, no components, no copper. One solid, one
+    # product, a few hundred kB. This is the Onshape placement set -- Onshape
+    # only has to answer "where does this board sit", and a single solid with
+    # real cylindrical mounting holes is the easiest thing to mate against.
+    "outline": ["--board-only"],
     "full": STANDARD + ["--include-soldermask", "--include-tracks", "--include-zones"],
     "inner": STANDARD + ["--include-soldermask", "--include-tracks", "--include-zones",
                          "--include-inner-copper"],
@@ -532,10 +537,22 @@ def export(cli, board, out, preset, extra, dry_run, clip):
                         pass
 
     dt = time.time() - t0
-    if result.returncode != 0 or not os.path.exists(out):
+    if not os.path.exists(out):
         tail = (result.stderr or result.stdout).strip().splitlines()[-1:]
         print(f"  FAIL rc={result.returncode}  {tail}")
         return False
+    # kicad-cli exits 2 when a footprint references a .wrl and nothing else
+    # ("Cannot use VRML models when exporting to non-mesh formats") but still
+    # writes a complete STEP for everything it could resolve. Treating that as a
+    # hard failure skipped post_process, which left the file on disk with its
+    # products still named after the clipped temp board -- worse than either
+    # succeeding or failing outright. A written file is a result; report the
+    # exit code as a warning and finish processing it.
+    if result.returncode != 0:
+        reasons = sorted({ln.strip() for ln in (result.stderr + result.stdout).splitlines()
+                          if "Cannot use VRML models" in ln})
+        print(f"  WARNING: kicad-cli exited {result.returncode} but wrote the file"
+              + (f": {reasons[0]}" if reasons else ""))
 
     post_process(out, temp_stem or os.path.splitext(os.path.basename(board))[0],
                  os.path.splitext(os.path.basename(out))[0])
@@ -572,6 +589,10 @@ def main():
                    help="keep copper that hangs past Edge.Cuts")
     p.add_argument("--root", default=ROOT, help=f"hardware dir (default {ROOT})")
     p.add_argument("--kicad-cli", help="path to kicad-cli")
+    p.add_argument("--outdir",
+                   help="with --all, write every STEP into this one directory instead of "
+                        "each repo's export/. This is the Onshape import set: one folder "
+                        "to drag in, named by product.")
     p.add_argument("--dry-run", action="store_true", help="print commands only")
     p.add_argument("extra", nargs="*", help="extra kicad-cli flags")
     a = p.parse_args()
@@ -579,7 +600,9 @@ def main():
     cli = find_kicad_cli(a.kicad_cli)
 
     if a.all:
-        jobs = [(board, os.path.join(a.root, repo, "export", name + ".step"))
+        jobs = [(board,
+                 os.path.join(a.outdir, name + ".step") if a.outdir
+                 else os.path.join(a.root, repo, "export", name + ".step"))
                 for repo, board, name in discover(a.root, a.repo, a.products)]
         if not jobs:
             sys.exit("no boards discovered")
