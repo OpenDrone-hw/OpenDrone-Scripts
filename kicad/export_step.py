@@ -85,6 +85,7 @@ Usage:
   export_step.py --all --dry-run
 """
 import argparse
+import collections
 import glob
 import math
 import os
@@ -99,7 +100,13 @@ ROOT = os.path.expanduser("~/OpenDrone/hardware")
 
 # --subst-models pulls the STEP model where a footprint ships both STEP and
 # VRML; --no-dnp keeps unpopulated parts out so the model matches a shipped board.
-COMMON = ["--subst-models", "--no-dnp"]
+# --fill-all-vias: do NOT cut via holes in the conductor layers. A via-in-pad
+# array otherwise punches a grid of circles through every pad, which is what the
+# Onshape import kept showing. render_board.py has always stripped vias for the
+# README images, so the 2D renders never revealed it. Measured on OpenESC-20x20:
+# 16.16 MB -> 14.47 MB, and byte-identical to deleting all 1050 vias with pcbnew,
+# so the flag alone is enough and the board is never mutated for it.
+COMMON = ["--subst-models", "--no-dnp", "--fill-all-vias"]
 
 STANDARD = ["--include-pads", "--include-silkscreen"]
 
@@ -115,6 +122,14 @@ PRESETS = {
     "inner": STANDARD + ["--include-soldermask", "--include-tracks", "--include-zones",
                          "--include-inner-copper"],
 }
+
+STRIP_FP_SILK = True
+GOLD_PADS = True
+
+# ENIG gold, the same value export-boards.mjs paints the web GLB pads, so the
+# STEP and the GLB agree. kicad-cli writes exposed copper as a neutral 0.735
+# grey, which reads as bare tin next to the green mask.
+GOLD_RGB = (0.90, 0.72, 0.36)
 
 MIN_OUTSIDE_MM2 = 0.001  # ignore rounding-level slivers of copper past the edge
 
@@ -253,7 +268,7 @@ def clip_board_to_outline(board_path, scratch):
     if not board.GetBoardPolygonOutlines(outline, False) or outline.OutlineCount() == 0:
         # No closed Edge.Cuts to clip against. That is a board defect, not an
         # export problem, and it must not be reported as "pcbnew missing".
-        return board_path, "no-outline", None, None, None
+        return board_path, "no-outline", None, None, None, 0
 
     L = pcbnew.UNDEFINED_LAYER  # padstack "all layers"
     clipped = deleted = notched = 0
@@ -398,11 +413,25 @@ def clip_board_to_outline(board_path, scratch):
 
     exposed = add_mask_exposed_copper(board, outline, pcbnew)
 
+    # Footprint-level silkscreen (component outlines, polarity ticks) is clutter
+    # in a 3D export: it is mostly hidden under the part that owns it, and what
+    # a reader looks for is the BOARD legend, which lives in board drawings and
+    # is untouched here. RemoveNative, not Remove: the SWIG binding hands back
+    # copies, so Remove silently does nothing and the strip reports success
+    # while changing nothing.
+    silk = 0
+    if STRIP_FP_SILK:
+        for fp in board.GetFootprints():
+            for it in list(fp.GraphicalItems()):
+                if it.GetLayer() in (pcbnew.F_SilkS, pcbnew.B_SilkS):
+                    fp.RemoveNative(it)
+                    silk += 1
+
     # Save returns False on failure rather than raising. Ignoring it would export
     # the UNCLIPPED board while printing clipped-pad counts.
     if not board.Save(tmp):
         sys.exit(f"pcbnew could not write {tmp}")
-    return tmp, clipped, deleted, notched, exposed
+    return tmp, clipped, deleted, notched, exposed, silk
 
 
 def add_mask_exposed_copper(board, outline, pcbnew):
@@ -471,6 +500,73 @@ def add_mask_exposed_copper(board, outline, pcbnew):
     return made
 
 
+def recolour_pads_gold(text):
+    """Repaint exposed copper from kicad-cli's neutral grey to ENIG gold.
+
+    The pad colour is found, not assumed: STYLED_ITEMs are grouped by the
+    COLOUR_RGB they resolve to, and the pad colour is the neutral grey whose
+    styled items are all MANIFOLD_SOLID_BREPs. That is exactly the pad solids
+    (758 of them on OpenESC-20x20) and never a component, whose models are
+    styled per ADVANCED_FACE. Matching on the literal 0.735 would break the
+    first time KiCad changes its default copper colour.
+    """
+    flat = re.sub(r"\s*\n\s*", " ", text)
+    ent = {m.group(1): (m.group(2), m.group(3)) for m in
+           re.finditer(r"#(\d+)\s*=\s*([A-Z_0-9]+)\s*\((.*?)\)\s*;", flat)}
+    colour = {}
+    for i, (t, b) in ent.items():
+        if t != "COLOUR_RGB":
+            continue
+        v = re.findall(r"'[^']*'\s*,\s*([\d.eE+-]+)\s*,\s*([\d.eE+-]+)\s*,\s*([\d.eE+-]+)", b)
+        if v:
+            colour[i] = tuple(float(x) for x in v[0])
+
+    def resolve(i, depth=0):
+        if depth > 8 or i not in ent:
+            return None
+        if ent[i][0] == "COLOUR_RGB":
+            return i
+        for j in re.findall(r"#(\d+)", ent[i][1]):
+            r = resolve(j, depth + 1)
+            if r:
+                return r
+        return None
+
+    solids = collections.Counter()
+    faces = collections.Counter()
+    for i, (t, b) in ent.items():
+        if t != "STYLED_ITEM":
+            continue
+        cid = resolve(i)
+        if not cid:
+            continue
+        ids = re.findall(r"#(\d+)", b)
+        tt = ent.get(ids[-1], ("?", ""))[0] if ids else "?"
+        (solids if tt == "MANIFOLD_SOLID_BREP" else faces)[cid] += 1
+
+    best, best_n = None, 0
+    for cid, n in solids.items():
+        r, g, b_ = colour.get(cid, (0, 0, 0))
+        neutral = max(r, g, b_) - min(r, g, b_) < 0.02
+        if neutral and not faces[cid] and n > best_n:
+            best, best_n = cid, n
+    if not best:
+        return text
+
+    def repaint(m):
+        if m.group(1) != best:
+            return m.group(0)
+        return (f"#{best} = COLOUR_RGB ( '{m.group(2)}', "
+                f"{GOLD_RGB[0]:.10f}, {GOLD_RGB[1]:.10f}, {GOLD_RGB[2]:.10f} )")
+
+    out, n = re.subn(r"#(\d+)\s*=\s*COLOUR_RGB\s*\(\s*'([^']*)'\s*,"
+                     r"\s*[\d.eE+-]+\s*,\s*[\d.eE+-]+\s*,\s*[\d.eE+-]+\s*\)",
+                     repaint, text)
+    if n:
+        print(f"  pads       {best_n} exposed-copper solid(s) repainted ENIG gold")
+    return out
+
+
 def post_process(step_path, temp_stem, product):
     """Zero transparency, and name the assembly after the product.
 
@@ -482,6 +578,8 @@ def post_process(step_path, temp_stem, product):
         text = fh.read()
     text = re.sub(r"SURFACE_STYLE_TRANSPARENT\([^)]*\)",
                   "SURFACE_STYLE_TRANSPARENT(0.)", text)
+    if GOLD_PADS:
+        text = recolour_pads_gold(text)
     # kicad-cli stamps the export time into FILE_NAME, so two exports of an
     # unchanged board never compare equal. Both sibling scripts strip their
     # equivalent. Note this does NOT make the file fully reproducible: kicad-cli
@@ -509,7 +607,7 @@ def export(cli, board, out, preset, extra, dry_run, clip):
     temp_stem = ""
     try:
         if clip:
-            src, nclip, ndel, nhole, nmask = clip_board_to_outline(board, scratch)
+            src, nclip, ndel, nhole, nmask, nsilk = clip_board_to_outline(board, scratch)
             if scratch:
                 temp_stem = os.path.basename(scratch[0])
             if nclip == "no-outline":
@@ -519,7 +617,8 @@ def export(cli, board, out, preset, extra, dry_run, clip):
             elif nclip or ndel or nhole or nmask:
                 note = (f"  (clipped {nclip} pad(s), removed {ndel} outside, "
                         f"notched {nhole} castellation(s), "
-                        f"{nmask} mask-exposed copper shape(s))")
+                        f"{nmask} mask-exposed copper shape(s)"
+                        + (f", stripped {nsilk} footprint silk" if nsilk else "") + ")")
             cmd[-1] = src
         result = subprocess.run(cmd, capture_output=True, text=True)
     finally:
@@ -593,9 +692,18 @@ def main():
                    help="with --all, write every STEP into this one directory instead of "
                         "each repo's export/. This is the Onshape import set: one folder "
                         "to drag in, named by product.")
+    p.add_argument("--grey-pads", action="store_true",
+                   help="leave exposed copper at kicad-cli's grey instead of ENIG gold")
+    p.add_argument("--keep-fp-silk", action="store_true",
+                   help="keep footprint-level silkscreen (component outlines and "
+                        "polarity ticks); the board legend is always kept")
     p.add_argument("--dry-run", action="store_true", help="print commands only")
     p.add_argument("extra", nargs="*", help="extra kicad-cli flags")
     a = p.parse_args()
+
+    global STRIP_FP_SILK, GOLD_PADS
+    STRIP_FP_SILK = not a.keep_fp_silk
+    GOLD_PADS = not a.grey_pads
 
     cli = find_kicad_cli(a.kicad_cli)
 
