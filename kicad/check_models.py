@@ -102,8 +102,9 @@ WRL_POINTS = re.compile(r"point\s*\[(.*?)\]", re.S)
 # character class without the "-" truncates it and float() then raises
 _FLOAT = r"[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?"
 TRIPLE = re.compile(rf"({_FLOAT})\s+({_FLOAT})\s+({_FLOAT})")
-STEP_POINT = re.compile(r"CARTESIAN_POINT\s*\(\s*'[^']*'\s*,\s*\(\s*"
-                        r"([-\d.eE+]+)\s*,\s*([-\d.eE+]+)\s*,\s*([-\d.eE+]+)\s*\)")
+STEP_ID_POINT = re.compile(r"#(\d+)\s*=\s*CARTESIAN_POINT\s*\(\s*'[^']*'\s*,\s*\(\s*"
+                           r"([-\d.eE+]+)\s*,\s*([-\d.eE+]+)\s*,\s*([-\d.eE+]+)\s*\)")
+STEP_VERTEX = re.compile(r"VERTEX_POINT\s*\(\s*'[^']*'\s*,\s*#(\d+)\s*\)")
 SUBST_TOL_MM = 0.3     # below this is tessellation and rounding, not a different part
 _bbox_cache = {}
 
@@ -128,12 +129,24 @@ def wrl_bbox(path):
 
 
 def step_bbox(path):
-    """Envelope of a STEP model in mm. Entities may wrap lines, so read whole."""
+    """Envelope of a STEP model in mm. Entities may wrap lines, so read whole.
+
+    Measure only the points a VERTEX_POINT refers to. A CARTESIAN_POINT is
+    also used for AXIS2_PLACEMENT_3D origins and surface reference points,
+    and on an analytic B-rep those sit well outside the solid: the
+    replacement USB-C measures 8.59 x 5.03 mm that way against a true
+    8.05 x 3.83, which is enough to fail E6 on a model that is fine. The
+    tessellated models miss this because every point in them is a vertex.
+    Falls back to every point when a file names no VERTEX_POINT at all.
+    """
     try:
         text = open(path, errors="replace").read().replace("\r", "").replace("\n", "")
     except OSError:
         return None
-    return _bbox([tuple(float(v) for v in m.groups()) for m in STEP_POINT.finditer(text)])
+    coords = {m.group(1): tuple(float(v) for v in m.groups()[1:])
+              for m in STEP_ID_POINT.finditer(text)}
+    used = [coords[i] for i in STEP_VERTEX.findall(text) if i in coords]
+    return _bbox(used or list(coords.values()))
 
 
 def substitution_gap(model_path):
