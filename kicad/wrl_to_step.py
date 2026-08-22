@@ -101,6 +101,57 @@ def boundary_loops(faces):
     return loops
 
 
+def orient(pts, tris):
+    """Consistent winding per connected component, outward.
+
+    The .wrl files declare `solid FALSE`, so KiCad draws both sides of every
+    triangle and inconsistent winding is invisible in the 3D viewer. Sewing
+    that into a solid is where it starts to matter: a shell built from
+    mixed-winding triangles comes out partly inside-out, and an inside-out
+    solid reads as a void in CAD. Walk each component over shared edges
+    flipping neighbours into agreement, then flip any component whose signed
+    volume came out negative.
+    """
+    adj = collections.defaultdict(list)
+    for i, (a, b, c) in enumerate(tris):
+        for u, v in ((a, b), (b, c), (c, a)):
+            adj[frozenset((u, v))].append(i)
+    out = list(tris)
+    seen = [False] * len(out)
+    for start in range(len(out)):
+        if seen[start]:
+            continue
+        seen[start] = True
+        stack, comp = [start], [start]
+        while stack:
+            i = stack.pop()
+            a, b, c = out[i]
+            for u, v in ((a, b), (b, c), (c, a)):
+                for j in adj[frozenset((u, v))]:
+                    if seen[j]:
+                        continue
+                    x, y, z = out[j]
+                    # a correctly wound neighbour crosses the shared edge the
+                    # other way round; same direction means it is flipped
+                    if (u, v) in ((x, y), (y, z), (z, x)):
+                        out[j] = (x, z, y)
+                    seen[j] = True
+                    stack.append(j)
+                    comp.append(j)
+        vol = 0.0
+        for i in comp:
+            a, b, c = out[i]
+            pa, pb, pc = pts[a], pts[b], pts[c]
+            vol += (pa[0] * (pb[1] * pc[2] - pb[2] * pc[1])
+                    - pa[1] * (pb[0] * pc[2] - pb[2] * pc[0])
+                    + pa[2] * (pb[0] * pc[1] - pb[1] * pc[0])) / 6.0
+        if vol < 0:
+            for i in comp:
+                a, b, c = out[i]
+                out[i] = (a, c, b)
+    return out
+
+
 def _tri_face(pts, tri):
     from OCP.BRepBuilderAPI import (BRepBuilderAPI_MakePolygon,
                                     BRepBuilderAPI_MakeFace)
@@ -185,29 +236,6 @@ def _ear_clip(ring):
     return tris
 
 
-def _cap_faces(pts, loop):
-    """Close one boundary loop. A planar loop becomes a single face; a
-    non-planar one is ear-clipped into triangles. Returns a list of faces."""
-    from OCP.BRepBuilderAPI import (BRepBuilderAPI_MakePolygon,
-                                    BRepBuilderAPI_MakeFace)
-    from OCP.gp import gp_Pnt
-    poly = BRepBuilderAPI_MakePolygon()
-    for i in loop:
-        poly.Add(gp_Pnt(*pts[i]))
-    poly.Close()
-    if poly.IsDone():
-        mk = BRepBuilderAPI_MakeFace(poly.Wire())
-        if mk.IsDone():
-            return [mk.Face()]
-    ring = [pts[i] for i in loop]
-    out = []
-    for a, b, c in _ear_clip(ring):
-        f = _tri_face(pts, (loop[a], loop[b], loop[c]))
-        if f is not None:
-            out.append(f)
-    return out
-
-
 def _solidify(shape):
     """Closed shells -> oriented solids. Returns (solids, open_shells)."""
     from OCP.BRep import BRep_Tool
@@ -248,28 +276,36 @@ def build_shape(meshes, cap=True, tol=1e-4):
     n_faces = n_caps = n_solids = n_open = 0
 
     for pts, faces in meshes:
+        tris = []
+        for face in faces:
+            tris.extend(triangulate(face))
+        n_solid_tris = len(tris)
+        if cap:
+            # Cap as triangles, not as one planar face per loop, so the
+            # orientation pass below sees the caps too.
+            for loop in boundary_loops(faces):
+                ring = [pts[i] for i in loop]
+                for a, b, c in _ear_clip(ring):
+                    tris.append((loop[a], loop[b], loop[c]))
+        n_caps += len(tris) - n_solid_tris
+        tris = orient(pts, tris)
+
         sew = BRepBuilderAPI_Sewing(tol)
         added = 0
-        for face in faces:
-            for tri in triangulate(face):
-                f = _tri_face(pts, tri)
-                if f is not None:
-                    sew.Add(f)
-                    added += 1
-        if cap:
-            for loop in boundary_loops(faces):
-                for f in _cap_faces(pts, loop):
-                    sew.Add(f)
-                    n_caps += 1
+        for tri in tris:
+            f = _tri_face(pts, tri)
+            if f is not None:
+                sew.Add(f)
+                added += 1
         if not added:
             continue
-        n_faces += added
+        n_faces += n_solid_tris
         sew.Perform()
         solids, opened = _solidify(sew.SewedShape())
-        for s in solids:
-            builder.Add(comp, s)
-        for s in opened:
-            builder.Add(comp, s)
+        for s_ in solids:
+            builder.Add(comp, s_)
+        for s_ in opened:
+            builder.Add(comp, s_)
         n_solids += len(solids)
         n_open += len(opened)
     return comp, n_faces, n_caps, n_solids, n_open
