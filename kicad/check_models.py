@@ -98,7 +98,10 @@ FIELDS = ("file", "offset", "scale", "rotation", "visible")
 # they are not, the 3D viewer stays right (it renders the .wrl) and the STEP
 # export is wrong, which is exactly the failure that is hard to catch by eye.
 WRL_POINTS = re.compile(r"point\s*\[(.*?)\]", re.S)
-TRIPLE = re.compile(r"(-?[\d.eE+]+)\s+(-?[\d.eE+]+)\s+(-?[\d.eE+]+)")
+# a VRML coordinate can carry a negative exponent (-9.9999994e-05); a
+# character class without the "-" truncates it and float() then raises
+_FLOAT = r"[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?"
+TRIPLE = re.compile(rf"({_FLOAT})\s+({_FLOAT})\s+({_FLOAT})")
 STEP_POINT = re.compile(r"CARTESIAN_POINT\s*\(\s*'[^']*'\s*,\s*\(\s*"
                         r"([-\d.eE+]+)\s*,\s*([-\d.eE+]+)\s*,\s*([-\d.eE+]+)\s*\)")
 SUBST_TOL_MM = 0.3     # below this is tessellation and rounding, not a different part
