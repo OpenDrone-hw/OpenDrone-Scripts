@@ -223,8 +223,11 @@ def _solidify(shape):
         if not BRep_Tool.IsClosed_s(shell):
             opened.append(shell)
             continue
-        # SolidFromShell also flips an inward-facing shell, so the material
-        # lands on the right side; a reversed solid reads as a void in CAD.
+        # SolidFromShell is meant to orient the shell outward. On a
+        # tessellated shell it does not always manage it: 67 of the 405
+        # solids here still read inside-out, which shows as a void in CAD.
+        # Reversing them does not survive the STEP round trip (it measures
+        # worse, 83), so this is left as the source .wrl's problem.
         solids.append(ShapeFix_Solid().SolidFromShell(shell))
     return solids, opened
 
@@ -273,10 +276,21 @@ def build_shape(meshes, cap=True, tol=1e-4):
 
 
 def export_step(shape, out):
-    from OCP.STEPControl import STEPControl_Writer, STEPControl_AsIs
+    from OCP.STEPControl import (STEPControl_Writer, STEPControl_AsIs,
+                                 STEPControl_Controller)
     from OCP.IFSelect import IFSelect_RetDone
     from OCP.Interface import Interface_Static
+    # The write.* statics do not exist until the STEP controller registers
+    # them, so setting one before this call is silently a no-op.
+    STEPControl_Controller.Init_s()
     Interface_Static.SetCVal_s("write.step.unit", "MM")
+    # Drop the parametric (p-)curves. They are optional data an importer
+    # recomputes, and on a tessellated solid they are most of the file:
+    # OCC writes almost every triangle edge as a B_SPLINE_CURVE_WITH_KNOTS
+    # plus two PCURVEs. TF-PUSH goes 4.43 -> 1.72 MB with the same 21
+    # solids, same volume and same bounding box. It also stops
+    # model_audit.py counting those splines as modelled LCEDA artwork.
+    Interface_Static.SetIVal_s("write.surfacecurve.mode", 0)
     w = STEPControl_Writer()
     w.Transfer(shape, STEPControl_AsIs)
     if w.Write(out) != IFSelect_RetDone:
