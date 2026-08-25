@@ -119,6 +119,11 @@ ProcessThread(wx=None, cli=path, nonInteractive=True, openBrowser=False,
                        AUTO_FILL_OPT: True, NO_BACKUP_OPT: True, ...}).join()
 ```
 
+**3a. Fab-agnostic BOM, when ordering anywhere but JLCPCB.**
+`$KPY kicad/universal_bom.py <board.kicad_pcb>` adds
+`*_bom_universal.csv` with Manufacturer + MPN columns to the set. See its
+section below.
+
 **3b. Check the export against the design. Every time.** Scripted:
 `python3 kicad/check_export.py <board.kicad_pcb>` runs the three comparisons
 below against the set in `production/` and fails on C1/C3. The plugin is a third
@@ -288,6 +293,61 @@ The GUI plugin driven from the command line, options read from the board's
 $KPY kicad/fab_export.py <board.kicad_pcb> [--name ARCHIVE_NAME]
 ```
 
+## `kicad/universal_bom.py`: fab-agnostic BOM
+
+The Fabrication Toolkit BOM is JLCPCB-shaped: five columns, LCSC only. Other
+fabs match parts on Manufacturer + MPN. This exports one CSV any fab accepts,
+`Designator,Value,Footprint,Quantity,LCSC,Manufacturer,MPN`: LCSC for the
+Chinese fabs, Manufacturer + MPN for everyone else, extra columns ignored by
+all. Placements come from the board like the Toolkit's, so layout-only parts
+(bulk cap banks) are counted, and Manufacturer/MPN gaps are joined by LCSC
+number from the other footprints and the schematics beside the board. It
+reports any BOM line still missing part data, which means the schematic needs
+its fields filled, not the CSV hand-edited.
+
+```bash
+$KPY kicad/universal_bom.py <board.kicad_pcb> [--name ARCHIVE_NAME] [--exclude-dnp]
+```
+
+Writes `production/<ARCHIVE_NAME>_bom_universal.csv` beside the Toolkit set.
+The positions CSV needs no translation: every fab reads the Toolkit's format,
+though rotations follow the JLCPCB convention, so tell any other fab to verify
+polarity against the gerbers in their DFM review.
+
+## `kicad/quote_pack.py`: the one export pipeline for quoting
+
+One command per board produces everything the big suppliers need, named to
+the org convention (`<Repo>-<rev>`, the release asset stem, lowercase rev):
+
+```bash
+$KPY kicad/quote_pack.py <board.kicad_pcb> [--name STEM] [--skip-ft] [--boms-only]
+```
+
+STEM defaults to `ARCHIVE_NAME` in the board's
+`fabrication-toolkit-options.json` and must end in `-rev<...>`; the rev names
+the pack dir. Output, in `production/quote-pack-<rev>/`:
+
+| File | Feeds |
+|---|---|
+| `<stem>.zip` | JLCPCB, PCBGOGO (full Fabrication Toolkit gerber set) |
+| `<stem>_portal.zip` | NextPCB, MakerPCB and other weak parsers: drill maps dropped, `G04 #@!` attribute comments stripped, geometry identical |
+| `<stem>_bom_universal.csv` | PCBGOGO, NextPCB, generic RFQ (LCSC + Manufacturer + MPN) |
+| `<stem>_bom_jlcpcb.csv` | JLCPCB (the Toolkit BOM, copied) |
+| `<stem>_bom_nextpcb.csv` | NextPCB template columns |
+| `<stem>_bom_makerpcb.xlsx` | MakerPCB (their portal rejects everything but their xlsx layout) |
+| `<stem>_bom_pcbgogo.xlsx` | PCBGOGO template layout (bare test pads marked DNS) |
+| `<stem>_positions.csv` + `.zip` | Everyone; rotations follow the JLCPCB convention, other fabs verify polarity in DFM |
+
+`--skip-ft` reuses the FT set already in `production/`; `--boms-only` also
+leaves the pack's gerbers and positions untouched (use while those files are
+pinned to a submitted order). `SPEC.md` in the pack dir is hand-written per
+board and never touched by the script. Steps: fab_export.py (unless skipped),
+universal_bom.py, then the per-fab conversions, so the BOM chain has one
+source: the board plus its schematics.
+
+`kicad/portal_gerbers.py` is the standalone form of the portal zip step:
+`python3 kicad/portal_gerbers.py <stem>.zip`.
+
 ## `kicad/multiboard/`: several boards from one schematic
 
 Fork of [Eliot-Abramo/Kicad-Multi-PCB](https://github.com/Eliot-Abramo/Kicad-Multi-PCB)
@@ -350,6 +410,62 @@ $KPY kicad/export_step.py --all --repo OpenRX
 $KPY kicad/export_step.py --all --products          # the publishable set
 $KPY kicad/export_step.py <board.kicad_pcb> -o out.step
 ```
+
+Four things the export does that are not obvious, all at export time on a temp
+copy, with the source board never written:
+
+- **`--fill-all-vias` is always on.** A via-in-pad array otherwise punches a
+  grid of circles through every pad, which is what the Onshape import kept
+  showing. Measured on OpenESC-20x20: 16.16 MB -> 14.47 MB, and byte-identical
+  to deleting all 1050 vias with pcbnew, so the flag alone is enough.
+  `render_board.py` has always stripped vias for the README images, which is why
+  the 2D renders never revealed this.
+- **Footprint silkscreen is stripped** (`--keep-fp-silk` to opt out). Component
+  outlines and polarity ticks are clutter in a 3D export and mostly hidden under
+  the part that owns them. The BOARD legend lives in board drawings and is
+  untouched.
+- **Exposed copper is repainted ENIG gold** (`--grey-pads` to opt out), the same
+  0.90/0.72/0.36 `export-boards.mjs` paints the web GLB, so the STEP and the GLB
+  agree instead of one reading gold and the other bare tin. The pad colour is
+  found, not hardcoded: STYLED_ITEMs are grouped by the COLOUR_RGB they resolve
+  to and the pad colour is the neutral grey whose styled items are all
+  MANIFOLD_SOLID_BREPs. That is exactly the pad solids and never a component,
+  whose models are styled per ADVANCED_FACE.
+- **A nonzero kicad-cli exit is not a failure if the file was written.**
+  kicad-cli exits 2 on "Cannot use VRML models when exporting to non-mesh
+  formats" but still emits a complete STEP. The old check skipped post_process,
+  leaving the file on disk with its products still named after the clipped temp
+  board. Both OpenAIO boards hit this, so the set was silently 8/10 with two
+  broken files.
+
+### The Onshape import set
+
+`--outdir` collects every discovered product into ONE directory instead of each
+repo's `export/`, which is the folder you drag into Onshape:
+
+```bash
+$KPY kicad/export_step.py --all --products --preset standard --outdir ~/OpenDrone/_onshape
+```
+
+10 boards, 152 MB. `--preset outline` (`--board-only`) gives the same set at
+2.9 MB, one solid and one product per board, if placement is all you need.
+
+Onshape takes `.stp`/`.step` only: **`.stpz` is not supported**, and neither is
+a zipped STEP. Of everything kicad-cli emits, only `step`, `stl` and `gltf` are
+on Onshape's import list, and STL is a size regression (37.7 MB against STEP's
+13.1 MB on the same board) that also loses B-rep, face colour and mateable
+faces. `.glb` support is contradictory in Onshape's own docs (their changelog
+says it shipped in 2022, their formats page lists only `.gltf`), and renaming
+will not work because `.glb` is a binary container.
+
+Getting one part per board in Onshape is an import-side operation, not a file
+property. The "Create a composite part" checkbox does nothing here because
+kicad-cli writes STEP as an assembly (19 PRODUCTs on the ESC), so Onshape builds
+several Part Studios and the composite is per-Part-Studio; worse, the "Combine
+to a single Part Studio" option that would flatten it explicitly disables the
+composite checkbox. The route that works: import normally, then apply the
+**Composite part** feature in the Part Studio with Closed ticked. Place a mate
+connector on the board body first, because composites never own mate connectors.
 
 `export/` is gitignored in every board repo. These files are **release assets**,
 not tracked source: the FC/ESC/RX set measures 134 MB, and committing it would
@@ -423,6 +539,74 @@ Clipping happens on a temp copy beside the source board (not in `/tmp`, or
 stay open. An unresolved 3D model is only a warning to kicad-cli, which still
 exits 0, so the script reports missing models explicitly rather than shipping a
 half-empty board.
+
+## `kicad/model_audit.py` + `kicad/apply_models.py`: 3D model diet
+
+easyeda2kicad models are 20-100x denser than KiCad's own model for the same
+package, and most carry the LCEDA watermark **modelled as raised geometry**: a
+0.8 x 0.8 mm X2SON came in at 2654 faces and 6.1 MB. That lettering renders on
+every CAD picture of the board, and it is not on the real part.
+
+`model_audit.py` reports what every model on a board costs and proposes leaner
+replacements. `apply_models.py` applies an accepted mapping. Both are read-only
+on geometry: **only the `(model ...)` reference is ever rewritten**, never a
+footprint, pad, land pattern, net, placement or value.
+
+```bash
+python3 kicad/model_audit.py hardware/board.kicad_pcb          # audit one board
+python3 kicad/model_audit.py --measure a.step b.step           # just measure
+$KPY kicad/apply_models.py --map map.json                      # dry run
+$KPY kicad/apply_models.py --map map.json --apply              # write
+```
+
+Three rules keep the audit honest:
+
+- **Artwork is detected, not assumed.** Vector lettering shows up as spline
+  CURVES. An earlier version keyed on spline surfaces and was wrong both ways:
+  it false-positived on stock models (a rounded pin-1 dimple uses splines) and
+  missed the densest easyeda models entirely, because those tessellate the
+  lettering into thousands of planar facets that are still spline-bounded.
+  Stock models sit at <= 24 spline curves; the easyeda ones run to 4482.
+- **A candidate must be the same shape.** Sorted bounding boxes have to match
+  within a tolerance (0.15 mm default), so a swap can shrink a model but never
+  change what the board looks like. This is what stops a 6-pin part replacing a
+  4-pin one.
+- **Measure, never parse by eye.** The easyeda models are SolidWorks exports
+  written `CARTESIAN_POINT ( 'NONE', (` with spaces and wrapped lines, where
+  KiCad's own are `CARTESIAN_POINT('',(`. A tight regex silently skips exactly
+  the models worth auditing and reports them as empty.
+
+`apply_models.py` writes the **library and the boards**. Fixing only the
+`.pretty` is invisible, because each board carries its own copy of the
+footprint; fixing only the `.kicad_pcb` is surface level, because the next
+placement pulls the bloated model back.
+
+It also resets offset and rotation on a swap, and that is where the work
+actually is. **KiCad stock models are authored centred on the footprint origin;
+easyeda models bake in a compensating offset that does not transfer.** Carrying
+the old offset across dropped a USB-C clean out of the render; zeroing it left
+the 5x6 DFN MOSFETs rotated 90 degrees and the JST bodies 2.5 mm off their pads.
+Every swap needs its placement re-fitted against the footprint's real pad
+geometry and then checked in `render_board.py`. There is no shortcut, and the
+offset is per FOOTPRINT, not per model: `JST_SM0xB-SRSS-TB` puts its origin on
+the signal-pad row and needs Y +2.5, while `CONN-SMD/TH_SM0xB-*` is already
+centred and needs zero.
+
+What the audit cannot fix: a part with no stock equivalent. USB-C 16P QTWT
+(10822 faces), RP2354B QFN-80, SKY13373 QFN-12, the tact switch and the microSD
+sockets have no match in KiCad's library, so they keep their watermark. The USB-C
+is worth keeping anyway: every stock substitute renders as a featureless block
+with no receptacle mouth.
+
+Two cheap wins the audit surfaces that are not swaps at all. Several models
+exist in more than one repo under the same filename with wildly different
+content (`SOT-23-6_L2.9-W1.6-P0.95-LS2.9-BL` is 3108 faces in the FC repos and
+251 in the ESC repos), so re-vendoring the leaner copy costs nothing. And
+`--fuse-shapes` is not a general win: 7% on the ESCs, which have overlapping
+paralleled pads, and **-1% on OpenFC-Lite**, where it adds imprint edges. STEP
+size tracks face count at 1.2-1.5 kB per face, and a fuse only deletes faces
+where solids genuinely interpenetrate. Components sit ON the board, they do not
+intersect it.
 
 ## `kicad/check_models.py`: 3D model pre-flight
 
