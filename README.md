@@ -119,6 +119,11 @@ ProcessThread(wx=None, cli=path, nonInteractive=True, openBrowser=False,
                        AUTO_FILL_OPT: True, NO_BACKUP_OPT: True, ...}).join()
 ```
 
+**3a. Fab-agnostic BOM, when ordering anywhere but JLCPCB.**
+`$KPY kicad/universal_bom.py <board.kicad_pcb>` adds
+`*_bom_universal.csv` with Manufacturer + MPN columns to the set. See its
+section below.
+
 **3b. Check the export against the design. Every time.** Scripted:
 `python3 kicad/check_export.py <board.kicad_pcb>` runs the three comparisons
 below against the set in `production/` and fails on C1/C3. The plugin is a third
@@ -287,6 +292,27 @@ The GUI plugin driven from the command line, options read from the board's
 ```bash
 $KPY kicad/fab_export.py <board.kicad_pcb> [--name ARCHIVE_NAME]
 ```
+
+## `kicad/universal_bom.py`: fab-agnostic BOM
+
+The Fabrication Toolkit BOM is JLCPCB-shaped: five columns, LCSC only. Other
+fabs match parts on Manufacturer + MPN. This exports one CSV any fab accepts,
+`Designator,Value,Footprint,Quantity,LCSC,Manufacturer,MPN`: LCSC for the
+Chinese fabs, Manufacturer + MPN for everyone else, extra columns ignored by
+all. Placements come from the board like the Toolkit's, so layout-only parts
+(bulk cap banks) are counted, and Manufacturer/MPN gaps are joined by LCSC
+number from the other footprints and the schematics beside the board. It
+reports any BOM line still missing part data, which means the schematic needs
+its fields filled, not the CSV hand-edited.
+
+```bash
+$KPY kicad/universal_bom.py <board.kicad_pcb> [--name ARCHIVE_NAME] [--exclude-dnp]
+```
+
+Writes `production/<ARCHIVE_NAME>_bom_universal.csv` beside the Toolkit set.
+The positions CSV needs no translation: every fab reads the Toolkit's format,
+though rotations follow the JLCPCB convention, so tell any other fab to verify
+polarity against the gerbers in their DFM review.
 
 ## `kicad/multiboard/`: several boards from one schematic
 
