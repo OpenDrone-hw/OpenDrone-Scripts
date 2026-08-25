@@ -187,10 +187,13 @@ re-runs the affected pre-screens. For OpenRX the DoC pins the firmware version,
 so a firmware change re-issues it too. The maintainer signs; an agent never
 signs or publishes a DoC.
 
-**8. Tag and publish.** Tag `revN`, then attach the fab zip, the STEP set and
-the schematic PDFs to the release, named so the website can read them:
-`<Repo>-<rev>-fab.zip` (the JLCPCB set), `<Repo>-<rev>.step`,
-`<Repo>-<rev>-schematic.pdf`. `OpenDrone-Web/scripts/sync-downloads.mjs`
+**8. Tag and publish.** Tag `revN`, then attach the STEP set and the
+schematic PDFs to the release: `<Repo>-<rev>.step`,
+`<Repo>-<rev>-schematic.pdf`. **Manufacturing files are private since
+2026-08-25**: the fab zip and the rest of the quote pack go to
+`incutec-org/production` as `boards/<Repo>/<rev>/`, never to the public
+release (liability call by Stan: no order-ready manufacturing sets in the
+open repos). `OpenDrone-Web/scripts/sync-downloads.mjs`
 maps assets to product-page download kinds by these shapes and skips anything
 it does not recognise, so a differently named asset is invisible to the shop.
 The rev 3.1 / 2.1 releases predate the convention and are named freely.
