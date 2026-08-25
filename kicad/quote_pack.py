@@ -137,6 +137,7 @@ def write_xlsx(data, path):
             '<borders count="1"><border/></borders>'
             '<cellStyleXfs count="1"><xf/></cellStyleXfs>'
             '<cellXfs count="1"><xf xfId="0"/></cellXfs>'
+            '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>'
             '</styleSheet>')
         z.writestr('_rels/.rels',
             '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
