@@ -24,7 +24,7 @@ Exit 0 when C1 and C3 pass and C2 only reports refs already known from a
 previous run is not tracked here: C2 and C4 are informational, C1 and C3
 are hard failures.
 """
-import argparse, csv, json, os, re, subprocess, sys, tempfile
+import argparse, collections, csv, json, os, re, subprocess, sys, tempfile
 import xml.etree.ElementTree as ET
 
 KICAD_CLI = next((p for p in (
@@ -121,6 +121,21 @@ def main():
     board_all = {r.upper(): r for r, _ in inc + exc}
     export_set = {r.upper() for r in desg}
     fails = []
+
+    # C0 duplicate designators. The dict/set comparisons below collapse
+    # duplicates silently, so a board with the same reference on two
+    # footprints (OpenRX-Lite TP3-TP5, 2026-08-25) would pass C1 while
+    # the export is ambiguous.
+    dup_board = sorted(r for r, n in collections.Counter(
+        r.upper() for r, _ in inc + exc).items() if n > 1)
+    dup_export = sorted(r for r, n in collections.Counter(
+        r.upper() for r in desg).items() if n > 1)
+    # Warning, not a gate: the 20x20 ships with a documented doubled pair
+    # (CL50/CL51, rev3.1 bulk bank). Anything listed here still needs eyes.
+    if dup_board:
+        print(f"C0 warn  duplicate designators on the board: {dup_board[:10]}")
+    if dup_export:
+        print(f"C0 warn  duplicate designators in the export: {dup_export[:10]}")
 
     # C1 board vs designators
     only_board = sorted(board_all[k] for k in set(board_all) - export_set)

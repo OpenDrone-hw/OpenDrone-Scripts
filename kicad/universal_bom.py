@@ -17,23 +17,31 @@ defaults to the one in fabrication-toolkit-options.json.
 import argparse, csv, glob, json, os, re, sys
 
 
-def sch_join_map(bdir):
-    """LCSC -> (Manufacturer, MPN) from schematic symbol instances (read-only)."""
-    out = {}
+def sch_join_maps(bdir):
+    """Read-only schematic scan. Returns two join maps:
+    by LCSC number -> (Manufacturer, MPN), and by reference -> (LCSC, Manufacturer, MPN).
+    The reference map covers boards whose footprints were never field-synced
+    from the schematic, so the PCB side carries no LCSC to join on."""
+    by_lcsc, by_ref = {}, {}
     prop = r'\(property "%s"\s+"([^"]*)"'
     for f in glob.glob(os.path.join(bdir, "*.kicad_sch")):
         txt = open(f, encoding="utf-8").read()
         # split on symbol instances; lib_symbols definitions have no instance uuid/at
         for blk in re.split(r'\(symbol\s*\n?\s*\(lib_id', txt)[1:]:
             lcsc = re.search(prop % "LCSC", blk)
-            if not lcsc or not lcsc.group(1):
+            lcsc = lcsc.group(1) if lcsc else ""
+            if not lcsc:
                 continue
             mfr = re.search(prop % "Manufacturer", blk)
             mpn = re.search(prop % "MPN", blk)
-            cur = out.get(lcsc.group(1), ("", ""))
-            out[lcsc.group(1)] = (cur[0] or (mfr.group(1) if mfr else ""),
-                                  cur[1] or (mpn.group(1) if mpn else ""))
-    return out
+            mfr = mfr.group(1) if mfr else ""
+            mpn = mpn.group(1) if mpn else ""
+            cur = by_lcsc.get(lcsc, ("", ""))
+            by_lcsc[lcsc] = (cur[0] or mfr, cur[1] or mpn)
+            ref = re.search(prop % "Reference", blk)
+            if ref and not ref.group(1).startswith("#"):
+                by_ref.setdefault(ref.group(1), (lcsc, mfr, mpn))
+    return by_lcsc, by_ref
 
 
 def main():
@@ -52,7 +60,7 @@ def main():
     import pcbnew
     board = pcbnew.LoadBoard(board_path)
 
-    join = sch_join_map(bdir)
+    by_lcsc, by_ref = sch_join_maps(bdir)
     rows = []
     for fp in board.GetFootprints():
         if fp.IsExcludedFromBOM():
@@ -69,14 +77,20 @@ def main():
             "mpn": fields.get("MPN", ""),
         })
 
-    # board-side join map beats nothing, schematic map fills the rest
+    # fill gaps: same-LCSC footprints, then schematic by reference, then by LCSC
     for r in rows:
+        if not r["lcsc"] and r["ref"] in by_ref:
+            r["lcsc"] = by_ref[r["ref"]][0]
         if r["lcsc"] and (not r["mfr"] or not r["mpn"]):
             for src in rows:
                 if src["lcsc"] == r["lcsc"]:
                     r["mfr"] = r["mfr"] or src["mfr"]
                     r["mpn"] = r["mpn"] or src["mpn"]
-            sm = join.get(r["lcsc"])
+            sr = by_ref.get(r["ref"])
+            if sr and sr[0] == r["lcsc"]:
+                r["mfr"] = r["mfr"] or sr[1]
+                r["mpn"] = r["mpn"] or sr[2]
+            sm = by_lcsc.get(r["lcsc"])
             if sm:
                 r["mfr"] = r["mfr"] or sm[0]
                 r["mpn"] = r["mpn"] or sm[1]
