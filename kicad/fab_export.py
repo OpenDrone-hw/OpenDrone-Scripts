@@ -34,7 +34,8 @@ def main():
 
     cache = os.path.join(tempfile.gettempdir(), "jlc_plugin_headless")
     legal = os.path.join(cache, "jlc_plugin")
-    if not os.path.isdir(legal):
+    if not os.path.exists(os.path.join(legal, "thread.py")):
+        shutil.rmtree(legal, ignore_errors=True)
         os.makedirs(cache, exist_ok=True)
         shutil.copytree(PLUGIN_DIR, legal)
     sys.path.insert(0, cache)

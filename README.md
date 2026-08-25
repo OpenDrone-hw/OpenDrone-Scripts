@@ -314,6 +314,39 @@ The positions CSV needs no translation: every fab reads the Toolkit's format,
 though rotations follow the JLCPCB convention, so tell any other fab to verify
 polarity against the gerbers in their DFM review.
 
+## `kicad/quote_pack.py`: the one export pipeline for quoting
+
+One command per board produces everything the big suppliers need, named to
+the org convention (`<Repo>-<rev>`, the release asset stem, lowercase rev):
+
+```bash
+$KPY kicad/quote_pack.py <board.kicad_pcb> [--name STEM] [--skip-ft] [--boms-only]
+```
+
+STEM defaults to `ARCHIVE_NAME` in the board's
+`fabrication-toolkit-options.json` and must end in `-rev<...>`; the rev names
+the pack dir. Output, in `production/quote-pack-<rev>/`:
+
+| File | Feeds |
+|---|---|
+| `<stem>.zip` | JLCPCB, PCBGOGO (full Fabrication Toolkit gerber set) |
+| `<stem>_portal.zip` | NextPCB, MakerPCB and other weak parsers: drill maps dropped, `G04 #@!` attribute comments stripped, geometry identical |
+| `<stem>_bom_universal.csv` | PCBGOGO, NextPCB, generic RFQ (LCSC + Manufacturer + MPN) |
+| `<stem>_bom_jlcpcb.csv` | JLCPCB (the Toolkit BOM, copied) |
+| `<stem>_bom_nextpcb.csv` | NextPCB template columns |
+| `<stem>_bom_makerpcb.xlsx` | MakerPCB (their portal rejects everything but their xlsx layout) |
+| `<stem>_positions.csv` + `.zip` | Everyone; rotations follow the JLCPCB convention, other fabs verify polarity in DFM |
+
+`--skip-ft` reuses the FT set already in `production/`; `--boms-only` also
+leaves the pack's gerbers and positions untouched (use while those files are
+pinned to a submitted order). `SPEC.md` in the pack dir is hand-written per
+board and never touched by the script. Steps: fab_export.py (unless skipped),
+universal_bom.py, then the per-fab conversions, so the BOM chain has one
+source: the board plus its schematics.
+
+`kicad/portal_gerbers.py` is the standalone form of the portal zip step:
+`python3 kicad/portal_gerbers.py <stem>.zip`.
+
 ## `kicad/multiboard/`: several boards from one schematic
 
 Fork of [Eliot-Abramo/Kicad-Multi-PCB](https://github.com/Eliot-Abramo/Kicad-Multi-PCB)
