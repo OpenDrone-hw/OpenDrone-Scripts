@@ -7,6 +7,8 @@ Takes the FT gerber zip and writes <stem>_portal.zip next to it:
   - drops the *-drl_map.gbr drill map documentation files
   - strips G04 #@! attribute comment lines (TF/TA/TO metadata) from
     gerber layers; they are spec-ignorable comments, geometry is untouched
+  - renames the board outline from KiCad's -Edge_Cuts.gm1 to .gko, the
+    Protel keepout name legacy portal tools expect the outline under
   - leaves Excellon drill files unmodified
 
 Fabrication output is identical. Use this variant for quote portals with
@@ -34,7 +36,10 @@ def main():
             if i.filename.lower().endswith(GERBER_EXT):
                 lines = data.decode('utf-8', 'replace').splitlines(keepends=True)
                 data = ''.join(l for l in lines if not l.startswith('G04 #@!')).encode()
-            zout.writestr(i, data)
+            name = i.filename
+            if name.endswith('-Edge_Cuts.gm1'):
+                name = name[:-len('-Edge_Cuts.gm1')] + '.gko'
+            zout.writestr(name, data)
             kept += 1
     print(f"{out}: {kept} files, {dropped} drill maps dropped")
 
