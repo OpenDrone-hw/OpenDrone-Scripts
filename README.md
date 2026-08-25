@@ -335,6 +335,7 @@ the pack dir. Output, in `production/quote-pack-<rev>/`:
 | `<stem>_bom_jlcpcb.csv` | JLCPCB (the Toolkit BOM, copied) |
 | `<stem>_bom_nextpcb.csv` | NextPCB template columns |
 | `<stem>_bom_makerpcb.xlsx` | MakerPCB (their portal rejects everything but their xlsx layout) |
+| `<stem>_bom_pcbgogo.xlsx` | PCBGOGO template layout (bare test pads marked DNS) |
 | `<stem>_positions.csv` + `.zip` | Everyone; rotations follow the JLCPCB convention, other fabs verify polarity in DFM |
 
 `--skip-ft` reuses the FT set already in `production/`; `--boms-only` also

@@ -19,6 +19,7 @@ Produces production/quote-pack-<rev>/ with, for every big supplier:
   <stem>_bom_nextpcb.csv     NextPCB template columns
   <stem>_bom_makerpcb.xlsx   MakerPCB template columns (their portal
                              rejects anything but their xlsx layout)
+  <stem>_bom_pcbgogo.xlsx    PCBGOGO template columns (bare TPs marked DNS)
   <stem>_positions.csv/.zip  FT pick and place (JLC rotation convention)
 
 --skip-ft reuses the existing FT export in production/ instead of
@@ -72,9 +73,8 @@ def write_nextpcb(rows, path):
                         r['Manufacturer'], r['Footprint'], r['Value'], '', ''])
 
 
-def write_makerpcb_xlsx(rows, path):
-    """Minimal stdlib xlsx in MakerPCB's template layout:
-    Item, Ref., MPN, Digikey/Mouser PN, Quantity."""
+def write_xlsx(data, path):
+    """Minimal stdlib single-sheet xlsx from a list of rows."""
     def esc(s):
         return (str(s).replace('&', '&amp;').replace('<', '&lt;')
                 .replace('>', '&gt;').replace('"', '&quot;'))
@@ -84,10 +84,6 @@ def write_makerpcb_xlsx(rows, path):
             return f'<c r="{ref}"><v>{v}</v></c>'
         return f'<c r="{ref}" t="inlineStr"><is><t>{esc(v)}</t></is></c>'
 
-    header = ['Item', 'Ref.', 'MPN', 'Digikey/Mouser PN', 'Quantity']
-    data = [header] + [
-        [i + 1, r['Designator'], r['MPN'], '', int(r['Quantity'])]
-        for i, r in enumerate(rows)]
     body = []
     for rn, row in enumerate(data, start=1):
         cells = ''.join(cell(f'{chr(65 + cn)}{rn}', v) for cn, v in enumerate(row))
@@ -120,6 +116,29 @@ def write_makerpcb_xlsx(rows, path):
             '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>'
             '</Relationships>')
         z.writestr('xl/worksheets/sheet1.xml', sheet)
+
+
+def write_makerpcb(rows, path):
+    """MakerPCB template layout: Item, Ref., MPN, Digikey/Mouser PN, Quantity."""
+    write_xlsx([['Item', 'Ref.', 'MPN', 'Digikey/Mouser PN', 'Quantity']] + [
+        [i + 1, r['Designator'], r['MPN'], '', int(r['Quantity'])]
+        for i, r in enumerate(rows)], path)
+
+
+def write_pcbgogo(rows, path):
+    """PCBGOGO template layout. Bare test pads (TP refs with no part) are
+    marked DNS so their sourcing pass skips them."""
+    data = [['Item #', '*Ref Des', '*Qty', 'Manufacturer', '*Mfg Part #',
+             'Description / Value', '*Package', 'Type',
+             'Your Instructions / Notes']]
+    for i, r in enumerate(rows):
+        bare = not r['MPN'] and not r['LCSC'] and r['Designator'].startswith('TP')
+        data.append([i + 1, r['Designator'], int(r['Quantity']),
+                     r['Manufacturer'], r['MPN'], r['Value'], r['Footprint'],
+                     'DNS' if bare else 'SMD',
+                     'Bare test pad, do not populate' if bare
+                     else (f"LCSC {r['LCSC']}" if r['LCSC'] else '')])
+    write_xlsx(data, path)
 
 
 def main():
@@ -160,7 +179,8 @@ def main():
     rows = read_universal(uni)
     shutil.copy2(uni, pack)
     write_nextpcb(rows, os.path.join(pack, f'{stem}_bom_nextpcb.csv'))
-    write_makerpcb_xlsx(rows, os.path.join(pack, f'{stem}_bom_makerpcb.xlsx'))
+    write_makerpcb(rows, os.path.join(pack, f'{stem}_bom_makerpcb.xlsx'))
+    write_pcbgogo(rows, os.path.join(pack, f'{stem}_bom_pcbgogo.xlsx'))
     ftbom = os.path.join(prod, f'{stem}_bom.csv')
     if os.path.exists(ftbom):
         shutil.copy2(ftbom, os.path.join(pack, f'{stem}_bom_jlcpcb.csv'))
@@ -178,8 +198,7 @@ def main():
             z.write(os.path.join(pack, f'{stem}_positions.csv'),
                     f'{stem}_positions.csv')
 
-    print(f"{pack}: {len(rows)} BOM lines -> universal, jlcpcb, nextpcb, "
-          f"makerpcb{' (boms only)' if a.boms_only else ' + gerbers, portal, positions'}")
+    print(f"{pack}: {len(rows)} BOM lines -> universal, jlcpcb, nextpcb, makerpcb, pcbgogo{' (boms only)' if a.boms_only else ' + gerbers, portal, positions'}")
 
 
 if __name__ == '__main__':
