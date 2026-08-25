@@ -35,6 +35,30 @@ GERBER_EXT = ('.gtl', '.gbl', '.gts', '.gbs', '.gtp', '.gbp', '.gto', '.gbo',
               '.gm1', '.gbr', '.g1', '.g2', '.g3', '.g4', '.g5', '.g6')
 
 
+def sync_rev_text(board_path, rev):
+    """Make the board's rev silkscreen text and title block match the export
+    rev. Only existing text matching rev<digits> is updated (case style
+    preserved); boards with no rev text are left alone. Saves the board."""
+    import pcbnew
+    b = pcbnew.LoadBoard(board_path)
+    changed = []
+    tb = b.GetTitleBlock()
+    if tb.GetRevision() != rev:
+        tb.SetRevision(rev)
+        changed.append(f"titleblock '{tb.GetRevision()}'")
+    for d in b.GetDrawings():
+        if isinstance(d, pcbnew.PCB_TEXT):
+            t = d.GetText().strip()
+            if re.fullmatch(r'(?i)rev[0-9][\w.]*', t) and t.lower() != rev:
+                new_t = rev.upper() if t.startswith('REV') else rev
+                d.SetText(new_t)
+                changed.append(f"text '{t}' -> '{new_t}'")
+    if changed:
+        pcbnew.SaveBoard(board_path, b)
+        print(f"rev sync: {', '.join(changed)}")
+    return bool(changed)
+
+
 def run_ft(board, stem):
     """Fabrication Toolkit headless, via fab_export.py in this directory."""
     here = os.path.dirname(os.path.abspath(__file__))
@@ -163,6 +187,10 @@ def main():
     pack = os.path.join(prod, f'quote-pack-{m.group(1)}')
     os.makedirs(pack, exist_ok=True)
 
+    if not a.boms_only:
+        if sync_rev_text(board, m.group(1)) and a.skip_ft:
+            print("warning: rev text changed but --skip-ft reuses an export "
+                  "made before the change", file=sys.stderr)
     if not a.skip_ft and not a.boms_only:
         run_ft(board, stem)
 
