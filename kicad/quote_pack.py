@@ -104,9 +104,13 @@ def write_xlsx(data, path):
                 .replace('>', '&gt;').replace('"', '&quot;'))
 
     def cell(ref, v):
+        # empty cells are omitted entirely: some portal-side readers (MakerPCB)
+        # crash on empty inline-string cells
+        if v == '' or v is None:
+            return ''
         if isinstance(v, int):
-            return f'<c r="{ref}"><v>{v}</v></c>'
-        return f'<c r="{ref}" t="inlineStr"><is><t>{esc(v)}</t></is></c>'
+            return f'<c r="{ref}" s="0"><v>{v}</v></c>'
+        return f'<c r="{ref}" s="0" t="inlineStr"><is><t>{esc(v)}</t></is></c>'
 
     body = []
     for rn, row in enumerate(data, start=1):
@@ -123,7 +127,17 @@ def write_xlsx(data, path):
             '<Default Extension="xml" ContentType="application/xml"/>'
             '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
             '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+            '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>'
             '</Types>')
+        z.writestr('xl/styles.xml',
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+            '<fonts count="1"><font><sz val="11"/><name val="Calibri"/></font></fonts>'
+            '<fills count="1"><fill><patternFill patternType="none"/></fill></fills>'
+            '<borders count="1"><border/></borders>'
+            '<cellStyleXfs count="1"><xf/></cellStyleXfs>'
+            '<cellXfs count="1"><xf xfId="0"/></cellXfs>'
+            '</styleSheet>')
         z.writestr('_rels/.rels',
             '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
             '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
@@ -138,6 +152,7 @@ def write_xlsx(data, path):
             '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
             '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
             '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>'
+            '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>'
             '</Relationships>')
         z.writestr('xl/worksheets/sheet1.xml', sheet)
 
