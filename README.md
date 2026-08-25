@@ -249,8 +249,9 @@ its U.FL connector.
 
 ## `kicad/release.py`: the release gate chain, steps 1-5
 
-One board through ERC/DRC-vs-baseline, model preflight, fab export + export
-check, STEP and schematic PDF; the first failed gate stops the run and
+One board through ERC/DRC-vs-baseline, model preflight, the full quote pack
+(quote_pack.py: rev sync, fab export, all BOM forms, portal gerbers, export
+check), STEP and schematic PDF; the first failed gate stops the run and
 nothing downstream is generated.
 
 ```bash

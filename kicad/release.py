@@ -12,7 +12,7 @@ Gates, in order; the first failure stops the run:
   G1  ERC and DRC (parity, refilled zones) against release-baselines.json:
       fails on any violation type not in the baseline, or a count above it
   G2  check_models.py --blocking-only on this board (E3/E4/E6)
-  G3  fab export (fab_export.py, unless --skip-fab-export keeps an existing
+  G3  quote pack (quote_pack.py, unless --skip-fab-export keeps an existing
       set) then check_export.py C1/C3 against board and schematic
   G4  STEP export via export_step.py
   G5  schematic PDF via kicad-cli
@@ -78,13 +78,16 @@ def gate2(board):
 
 
 def gate3(board, skip_export):
-    if not skip_export:
-        r = run([KPY, os.path.join(HERE, "fab_export.py"), board])
-        if r.returncode:
-            return [f"fab export failed: {(r.stderr or r.stdout).strip()[-200:]}"]
-    r = run([sys.executable, os.path.join(HERE, "check_export.py"), board])
+    # quote_pack.py = rev-text sync, fab export, universal + per-fab BOMs,
+    # portal gerbers, positions, then check_export as its own exit gate
+    cmd = [KPY, os.path.join(HERE, "quote_pack.py"), board]
+    if skip_export:
+        cmd.append("--skip-ft")
+    r = run(cmd)
     print(r.stdout.rstrip())
-    return [] if r.returncode == 0 else ["check_export failed, see above"]
+    if r.returncode:
+        return [f"quote_pack failed: {(r.stderr or r.stdout).strip()[-300:]}"]
+    return []
 
 
 def product_name(board):
