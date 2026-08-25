@@ -228,6 +228,14 @@ def main():
 
     print(f"{pack}: {len(rows)} BOM lines -> universal, jlcpcb, nextpcb, makerpcb, pcbgogo{' (boms only)' if a.boms_only else ' + gerbers, portal, positions'}")
 
+    r = subprocess.run([sys.executable, os.path.join(here, 'check_export.py'),
+                        board, '--prefix', stem], capture_output=True, text=True)
+    for line in (r.stdout + r.stderr).splitlines():
+        if line.startswith(('C0', 'C1', 'C2', 'C3', '==')):
+            print(line)
+    if r.returncode != 0:
+        sys.exit("check_export FAILED: the pack does not match the board")
+
 
 if __name__ == '__main__':
     main()
