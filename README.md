@@ -457,15 +457,16 @@ Six things the export does that are not obvious, all at export time on a temp
 copy, with the source board never written:
 
 - **Named colours are written out as numbers.** STEP allows
-  `DRAUGHTING_PRE_DEFINED_COLOUR('black')`, KiCad's own library models use it
-  for every black IC body, and Onshape ignores it: the OpenESC MOSFETs arrived
-  untinted. Each one becomes the `COLOUR_RGB` that ISO 10303-46 defines it as,
+  `DRAUGHTING_PRE_DEFINED_COLOUR('black')` and KiCad's own library models use
+  it for every black IC body. An importer that does not read a named colour
+  draws the part untinted, which is what the OpenESC MOSFETs looked like. Each one becomes the `COLOUR_RGB` that ISO 10303-46 defines it as,
   same entity id, so every STYLED_ITEM pointing at it still resolves.
 - **The outer loop of a face with holes is named.** kicad-cli writes the outer
   boundary and the holes both as `FACE_BOUND` and never `FACE_OUTER_BOUND`,
-  which is legal but leaves the importer to work it out. Onshape does not: it
-  fills them, so every stroke-font glyph with a closed counter came in as a
-  blob and REV3.3 read as a smear. The largest loop on each multi-bound face is
+  which is legal but leaves the importer to work it out. An importer that
+  needs the outer bound named fills them instead, and that is what every
+  stroke-font glyph with a closed counter looked like coming back from
+  Onshape. The largest loop on each multi-bound face is
   renamed `FACE_OUTER_BOUND`; a hole is inside its own face, so it can never be
   the largest. 46 to 194 faces per board.
 
