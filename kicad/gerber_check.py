@@ -31,6 +31,12 @@ def classify(name, text):
     m = re.search(r'(?:%TF|G04 #@! TF)\.FileFunction,([^*]+)\*', text)
     ff = m.group(1) if m else ''
     n = name.lower()
+    if not ff:  # portal zips have attributes stripped: fall back to KiCad names
+        ext = os.path.splitext(n)[1]
+        by_ext = {'.gtl': 'Copper,L1,Top', '.gbl': 'Copper,Bot', '.gts': 'Soldermask,Top', '.gbs': 'Soldermask,Bot',
+                  '.gtp': 'Paste,Top', '.gbp': 'Paste,Bot', '.gto': 'Legend,Top', '.gbo': 'Legend,Bot',
+                  '.gm1': 'Profile,NP', '.gko': 'Profile,NP'}
+        ff = by_ext.get(ext, 'Copper,Inner' if re.fullmatch(r'\.g\d', ext) else '')
     if ff.startswith('Copper'):
         side = 'top' if 'Top' in ff else 'bot' if 'Bot' in ff else 'inner'
         return ('cu', side, ff)
@@ -167,7 +173,7 @@ def main():
             fs = re.search(r'%FSLAX\d\dY\d\d\*%', t)
             mo = re.search(r'%MO(MM|IN)\*%', t)
             fmts.add((fs.group(0) if fs else None, mo.group(1) if mo else None))
-            if not c[2]:
+            if not re.search(r'(?:%TF|G04 #@! TF)\.FileFunction', t):
                 noattr.append(n)
     say('G1', 'FAIL' if missing else 'PASS',
         f"{2 + inner} copper layers ({inner} inner), {len(files)} files" + (f"; MISSING {missing}" if missing else ''))
