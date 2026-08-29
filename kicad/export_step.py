@@ -95,6 +95,12 @@ import subprocess
 import sys
 import time
 
+# One definition of what a named STEP colour means, shared with the tool that
+# writes the library models. wrl_to_step imports OCP inside its functions
+# only, so this costs nothing under KiCad's Python, which has no OCP.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from wrl_to_step import expand_predefined_colours  # noqa: E402
+
 DEFAULT_KICAD_CLI = "/Applications/KiCad/KiCad.app/Contents/MacOS/kicad-cli"
 ROOT = os.path.expanduser("~/OpenDrone/hardware")
 
@@ -148,8 +154,13 @@ TEMP_PREFIX = ".export_step_tmp_"
 #      project file is there, and without it every project-relative 3D model
 #      silently vanishes from the output.
 #   2. These directories are skipped wherever they appear.
-SKIP_DIRS = {".history", ".git", "backups", "archive", "libs", ".pio", "__pycache__",
-             "node_modules", ".venv", "export"}
+#      Every dot directory is skipped, not just the ones named here. A
+#      `.history_trim/` left beside a board held a stale copy of it, complete
+#      with its .kicad_pro, so discovery found two boards of the same name and
+#      the stale one, exported second, overwrote the real OpenFC-Lite-Mini with
+#      a 5.7 MB file missing 18 components.
+SKIP_DIRS = {"backups", "archive", "libs", "__pycache__", "node_modules",
+             "export", "templates"}
 
 # A discovered board is not automatically a PRODUCT. Fab panels and bench
 # fixtures are real projects that export fine, but nobody fits one into their
@@ -194,7 +205,8 @@ def discover(root, only_repo=None, products_only=False):
         if wanted and repo not in wanted:
             continue
         for dirpath, dirnames, filenames in os.walk(repo_dir):
-            dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS and not d.endswith(".pretty")]
+            dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS
+                           and not d.startswith(".") and not d.endswith(".pretty")]
             for fn in sorted(filenames):
                 if not fn.endswith(".kicad_pcb"):
                     continue
@@ -500,6 +512,75 @@ def add_mask_exposed_copper(board, outline, pcbnew):
     return made
 
 
+def parse_entities(text):
+    """{id: (type, body)} for every STEP entity, and the flattened text."""
+    flat = re.sub(r"\s*\n\s*", " ", text)
+    return {m.group(1): (m.group(2), m.group(3)) for m in
+            re.finditer(r"#(\d+)\s*=\s*([A-Z_0-9]+)\s*\((.*?)\)\s*;", flat)}
+
+
+def mark_outer_bounds(text):
+    """Name the outer loop of every face that has more than one bound.
+
+    kicad-cli writes both the outer loop and the holes as FACE_BOUND and
+    never FACE_OUTER_BOUND, which is legal but leaves the importer to work
+    out which is which. Onshape does not: it fills them, so every letter
+    with a closed counter (the O of OPEN, the 8 of a rev number, the ring
+    a stroke-font glyph makes) comes in as a solid blob, and the same
+    happens to any component face with a hole in it.
+
+    The outer loop is the one whose points enclose the others, taken here
+    as the largest bounding box: a hole is inside its face by definition,
+    so it cannot be the biggest. Only multi-bound faces are touched, and
+    only the entity keyword changes.
+    """
+    ent = parse_entities(text)
+    point = {}
+    for i, (t, b) in ent.items():
+        if t == "CARTESIAN_POINT":
+            v = re.findall(r"([-\d.eE+]+)\s*,\s*([-\d.eE+]+)\s*,\s*([-\d.eE+]+)", b)
+            if v:
+                point[i] = tuple(float(x) for x in v[0])
+
+    def loop_extent(bound_id, depth=0):
+        """Bounding-box diagonal of the loop under a FACE_BOUND."""
+        seen, stack, pts = set(), list(re.findall(r"#(\d+)", ent[bound_id][1])), []
+        while stack:
+            j = stack.pop()
+            if j in seen or len(seen) > 4000:
+                continue
+            seen.add(j)
+            if j in point:
+                pts.append(point[j])
+                continue
+            if j in ent:
+                stack.extend(re.findall(r"#(\d+)", ent[j][1]))
+        if not pts:
+            return 0.0
+        return sum((max(p[k] for p in pts) - min(p[k] for p in pts)) ** 2
+                   for k in range(3)) ** 0.5
+
+    rename = set()
+    for i, (t, b) in ent.items():
+        if t != "ADVANCED_FACE":
+            continue
+        bounds = [j for j in re.findall(r"#(\d+)", b)
+                  if ent.get(j, ("", ""))[0] in ("FACE_BOUND", "FACE_OUTER_BOUND")]
+        if len(bounds) < 2:
+            continue
+        outer = max(bounds, key=loop_extent)
+        if ent[outer][0] == "FACE_BOUND":
+            rename.add(outer)
+    if not rename:
+        return text, 0
+
+    def sub(m):
+        return (f"#{m.group(1)} = FACE_OUTER_BOUND" if m.group(1) in rename
+                else m.group(0))
+    out = re.sub(r"#(\d+)\s*=\s*FACE_BOUND", sub, text)
+    return out, len(rename)
+
+
 def recolour_pads_gold(text):
     """Repaint exposed copper from kicad-cli's neutral grey to ENIG gold.
 
@@ -578,6 +659,14 @@ def post_process(step_path, temp_stem, product):
         text = fh.read()
     text = re.sub(r"SURFACE_STYLE_TRANSPARENT\([^)]*\)",
                   "SURFACE_STYLE_TRANSPARENT(0.)", text)
+    # A named colour is a colour Onshape ignores, and KiCad's own library
+    # models use one for every black IC body. Numbers instead.
+    text, n_named = expand_predefined_colours(text)
+    if n_named:
+        print(f"  colours    {n_named} named colour(s) written out as RGB")
+    text, n_outer = mark_outer_bounds(text)
+    if n_outer:
+        print(f"  faces      {n_outer} outer loop(s) named, so holes stay holes")
     if GOLD_PADS:
         text = recolour_pads_gold(text)
     # kicad-cli stamps the export time into FILE_NAME, so two exports of an

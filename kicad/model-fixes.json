@@ -1,0 +1,76 @@
+{
+  "_README": [
+    "Corrections to 3D model placement, applied by apply_models.py --fixes.",
+    "One entry per (footprint, model) pair that needs a transform the library",
+    "does not carry. Values are ABSOLUTE, not deltas, so the file is the state",
+    "and a re-run is a no-op. apply_models.py --audit finds candidates.",
+    "",
+    "footprint: regex matched against the footprint name (library nickname",
+    "  dropped). model: regex matched against the model file basename. Both",
+    "  must match, so a model shared with a correctly drawn footprint is left",
+    "  alone.",
+    "rotation / offset: [x, y, z], degrees and mm, written into the footprint",
+    "  exactly as given.",
+    "reason: why, measured. The next person needs to know whether the fix",
+    "  still applies after a library update.",
+    "",
+    "SIGN OF THE Z ROTATION, measured, not assumed: KiCad's model rotation Z",
+    "is the NEGATIVE of the rotation that reaches the 3D scene. A footprint",
+    "written with rotation [0,0,90] exports with its local X on world -Y,",
+    "which is a -90 rotation. So the value here is minus the rotation the",
+    "part visibly needs. Verified by exporting a one-footprint board and",
+    "reading the AXIS2_PLACEMENT_3D refDirection out of the STEP.",
+    "",
+    "WHY THESE EXIST: KiCad's stock SOT-23 family models are authored for",
+    "KiCad's own footprints, which all put pin 1 at (-1.1375, -0.95) with the",
+    "three-pad rows running along Y. The EasyEDA-drawn footprints in these",
+    "repos use two other conventions, -BL with the rows along X and -BR with",
+    "them along Y but pin 1 in the opposite corner, and neither carries a",
+    "compensating rotation. The body then sits across its own pads (-BL) or",
+    "end for end (-BR)."
+  ],
+  "fixes": [
+    {
+      "footprint": "^SOT-23-6_L2\\.9-W1\\.6-P0\\.95-LS2\\.[89]-BL$",
+      "model": "^T?SOT-23-6$",
+      "rotation": [0, 0, -90],
+      "offset": [0, 0, 0],
+      "reason": "Pads run along X (pad 1 at -0.95, +1.15); the stock model is Y-long. -90 maps stock pad 1 (-1.1375, -0.95) onto this footprint's. Boards: OpenFC-Lite U6/U16 and OpenFC-Lite-Mini, the LMR51635 bucks."
+    },
+    {
+      "footprint": "^SOT-23-6_L2\\.9-W1\\.6-P0\\.95-LS2\\.8-BR$",
+      "model": "^SOT-23-6$",
+      "rotation": [0, 0, 180],
+      "offset": [0, 0, 0],
+      "reason": "Same axis as the stock model but pin 1 in the opposite corner: this footprint's pad 1 is (+1.35, +0.95), the stock model's is (-1.1375, -0.95). Board: OpenESC-20x20 U13, the LMR54406 buck."
+    },
+    {
+      "footprint": "^SOT-23-5_L3\\.0-W1\\.7-P0\\.95-LS2\\.8-BL$",
+      "model": "^SOT-23-5$",
+      "rotation": [0, 0, -90],
+      "offset": [0, 0, 0],
+      "reason": "Pads along X, stock model Y-long, same as the SOT-23-6 -BL case. Library only today, no board places it, fixed so the next one to place it is right."
+    },
+    {
+      "footprint": "^SOT-23-5_L3\\.0-W1\\.7-P0\\.95-LS2\\.8-BR$",
+      "model": "^SOT-23-5$",
+      "rotation": [0, 0, 180],
+      "offset": [0, 0, 0],
+      "reason": "Pin 1 in the opposite corner from the stock model, as the SOT-23-6 -BR. Board: OpenFC-Lite U11, the COS8051SOT OSD amplifier."
+    },
+    {
+      "footprint": "^DFN-3L_L1\\.0-W0\\.6-P0\\.65-BR$",
+      "model": "^DFN-3L_L1\\.0-W0\\.6-H0\\.5-P0\\.65-BR$",
+      "rotation": [0, 0, 0],
+      "offset": [0, 0, 0.5],
+      "reason": "Model authored Z -0.50 to 0.00, so the AP1606 sits under the board. 0.5 stands it on the face. Found by --audit, not by eye: OpenFC-Lite Q2 already carried this exact offset by hand and Q1 next to it did not, which is what an absolute catalogue is for. Also drops a 0.010 mm X nudge on those two, below anything that matters. Boards: OpenFC-Lite Q1/Q2, OpenFC-Core Q1."
+    },
+    {
+      "footprint": "^QFN-12_EP_2x2_Pitch0\\.5mm$",
+      "model": "^QFN-12_L2\\.0-W2\\.0-P0\\.50-BL-EP0\\.8$",
+      "rotation": [0, 0, 0],
+      "offset": [0, 0, 0.87],
+      "reason": "The model is authored entirely below its own origin (Z -0.870 to +0.001), so the SKY13373 RF switch sinks into the board instead of standing on it. 0.87 puts the package base on the board face. Boards: OpenRX-Gemini U5/U8, OpenRX-Mono U5."
+    }
+  ]
+}

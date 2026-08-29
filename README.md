@@ -398,11 +398,49 @@ from kicad-cli, so it inherits that.
 The E6 fix path: when the .step beside a .wrl is a different part and
 upstream ships the same wrong file, the .wrl the 3D viewer renders is the
 geometry of record. Produces a tessellated STEP solid, exact dimensions,
-faceted faces, no colors. Needs `pip install cadquery-ocp`, system python.
+faceted faces. Needs `pip install cadquery-ocp`, system python.
 
 ```bash
 python3 kicad/wrl_to_step.py model.wrl -o model.step
+python3 kicad/wrl_to_step.py --rebuild ~/OpenDrone/hardware      # all of ours
+python3 kicad/wrl_to_step.py --rebuild ~/OpenDrone/hardware --force
 ```
+
+**`--rebuild` is the repeatable form and the one to use.** It walks a tree
+and regenerates every .step this script wrote that is missing colour,
+matching on the OCC header so a vendor B-rep is never replaced by a mesh.
+It is a no-op once they all carry colour, so it can be re-run at any time;
+`--force` redoes them anyway, which is what a change to this script needs.
+
+Three things it does that the first version did not, each of which was a
+visible defect in Onshape:
+
+- **Colour per solid, from the .wrl Material.** Uncoloured solids are
+  coloured by the importer, so two instances of one part came in as two
+  different colours and every EasyEDA-sourced package was some default
+  orange. The diffuseColor floats are written through unchanged, which is
+  why the STEP now matches the KiCad 3D viewer. Note `Quantity_TOC_sRGB`,
+  not `_RGB`: OCC 7.9 stores colour linear and converts on write, so
+  passing 0.2235 as RGB writes 0.5101.
+- **Coplanar facets merged** (`ShapeUpgrade_UnifySameDomain`), kept only
+  when the result is still valid and the same volume. A tessellated box
+  side was dozens of triangles, which is most of the file and reads as a
+  grid of tiny squares in CAD. The RX tact switch went 10.75 -> 3.96 MB,
+  the microSD 1.87 -> 0.73 MB, 15 models 64 -> 38 MB in total.
+- **One named part, not a pile of solids.** The solids go under a single
+  XCAF label named after the file, with the colours on sub-shape labels.
+  Adding them as separate top labels also colours correctly, but OCC then
+  names each product after its shape type and the board arrives in Onshape
+  with a tree full of parts called SOLID and SHELL.
+
+A model whose .step is a real B-rep (any cylindrical, conical, spherical,
+toroidal or spline surface) is **coloured in place instead of rebuilt**:
+rebuilding it from the mesh would trade real cylinders for facets. The
+solids are matched to the .wrl mesh that drew them by counting vertices
+within 0.05 mm, not by bounding box. A .wrl holds one mesh per material,
+so the sixteen contacts of a USB-C are a single mesh whose box spans the
+whole connector and matches no one solid, and box matching put 2 of 34
+solids right where the vertex vote puts 34 of 34.
 
 ## `kicad/export_step.py`: standardized STEP exports
 
@@ -415,8 +453,21 @@ $KPY kicad/export_step.py --all --products          # the publishable set
 $KPY kicad/export_step.py <board.kicad_pcb> -o out.step
 ```
 
-Four things the export does that are not obvious, all at export time on a temp
+Six things the export does that are not obvious, all at export time on a temp
 copy, with the source board never written:
+
+- **Named colours are written out as numbers.** STEP allows
+  `DRAUGHTING_PRE_DEFINED_COLOUR('black')`, KiCad's own library models use it
+  for every black IC body, and Onshape ignores it: the OpenESC MOSFETs arrived
+  untinted. Each one becomes the `COLOUR_RGB` that ISO 10303-46 defines it as,
+  same entity id, so every STYLED_ITEM pointing at it still resolves.
+- **The outer loop of a face with holes is named.** kicad-cli writes the outer
+  boundary and the holes both as `FACE_BOUND` and never `FACE_OUTER_BOUND`,
+  which is legal but leaves the importer to work it out. Onshape does not: it
+  fills them, so every stroke-font glyph with a closed counter came in as a
+  blob and REV3.3 read as a smear. The largest loop on each multi-bound face is
+  renamed `FACE_OUTER_BOUND`; a hole is inside its own face, so it can never be
+  the largest. 46 to 194 faces per board.
 
 - **`--fill-all-vias` is always on.** A via-in-pad array otherwise punches a
   grid of circles through every pad, which is what the Onshape import kept
@@ -561,7 +612,36 @@ python3 kicad/model_audit.py hardware/board.kicad_pcb          # audit one board
 python3 kicad/model_audit.py --measure a.step b.step           # just measure
 $KPY kicad/apply_models.py --map map.json                      # dry run
 $KPY kicad/apply_models.py --map map.json --apply              # write
+$KPY kicad/apply_models.py --audit --fixes kicad/model-fixes.json
+$KPY kicad/apply_models.py --fixes kicad/model-fixes.json --apply
 ```
+
+### `kicad/model-fixes.json`: the placement catalogue
+
+Where a model needs a rotation or an offset the library does not carry, the
+correction lives in `kicad/model-fixes.json` and nowhere else. One entry per
+(footprint regex, model regex) pair, with the measurement that justifies it.
+Values are **absolute**, so the file states the intent rather than a history of
+nudges, applying it twice changes nothing, and a board that drifts back is
+pulled into line by a re-run. `--fixes` writes the library and the boards, the
+same two places `--map` does.
+
+Two failures put entries there, and `--audit` finds both from the files rather
+than from someone noticing in CAD:
+
+- **Axis crossed.** KiCad's stock SOT-23 family models are drawn for KiCad's
+  own footprints, which put pin 1 at (-1.1375, -0.95) with the pad rows along
+  Y. The EasyEDA footprints in these repos use two other conventions, and
+  neither carries a compensating rotation, so the body sits across its own pads
+  or end for end. That is the FC bucks, the OSD amplifier and the ESC buck.
+- **Sunk.** A model authored entirely below its own origin sits inside the
+  board. That is the SKY13373 RF switch on the RX boards (Z -0.870 to 0.001,
+  needs +0.87) and the AP1606 on the FCs (needs +0.5).
+
+**The Z rotation sign is inverted, and this is the thing to remember.** KiCad's
+model rotation Z is the negative of the rotation that reaches the 3D scene: a
+footprint written `[0, 0, 90]` exports with its local X on world -Y. Measured by
+exporting a one-footprint board and reading `AXIS2_PLACEMENT_3D`, not assumed.
 
 Three rules keep the audit honest:
 

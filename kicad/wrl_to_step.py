@@ -6,7 +6,20 @@ different shape, and the upstream (LCSC/EasyEDA) .step is the same wrong
 file, so a correct one has to be made. The .wrl is the model the viewer
 shows and the one a human has actually looked at, so it is the trusted
 geometry. This converts that mesh to tessellated STEP solids: exact
-dimensions, faceted surfaces, no colors. Good for fit-check, not render.
+dimensions, faceted surfaces. Good for fit-check, not render.
+
+Each IndexedFaceSet carries its own Material, so the solid built from it
+is written with that diffuseColor as a STEP surface colour. Without it
+every solid arrives unstyled and the importer picks its own: Onshape
+gives two instances of one part two different colours, which is what an
+uncoloured export looked like on the board. The float values are written
+through unchanged, so the STEP shows what the KiCad 3D viewer shows.
+
+Coplanar facets are merged into one face before writing
+(ShapeUpgrade_UnifySameDomain). A tessellated box side is dozens of
+triangles otherwise, which is most of the file size and reads as a mesh
+of tiny squares in CAD. Merging is skipped for a solid it would
+invalidate or whose volume it changes.
 
 Output is solids, not shells. Sewing alone yields shells and
 STEPControl_AsIs writes those verbatim, so every importer showed loose
@@ -21,6 +34,13 @@ Needs the cadquery-ocp wheel (pip install cadquery-ocp), system python.
 Usage:
     python3 wrl_to_step.py model.wrl [-o model.step]
     python3 wrl_to_step.py --check model.wrl     # parse and report only
+    python3 wrl_to_step.py model.wrl --no-unify  # keep every facet a face
+    python3 wrl_to_step.py --rebuild ~/OpenDrone/hardware   # every one of ours
+
+--rebuild walks a tree and regenerates every .step THIS SCRIPT wrote that
+is missing colour, next to its own .wrl. It matches on the OCC header, so
+a vendor B-rep is never replaced by a mesh: the only files it touches are
+ones an earlier run of this script produced.
 
 KiCad-lineage .wrl files are authored in 0.1 inch units; output is mm.
 """
@@ -33,13 +53,59 @@ INDEX_BLOCK = re.compile(r"coordIndex\s*\[(.*?)\]", re.S)
 # character class without the "-" truncates it and float() then raises
 _FLOAT = r"[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?"
 TRIPLE = re.compile(rf"({_FLOAT})\s+({_FLOAT})\s+({_FLOAT})")
+DIFFUSE = re.compile(rf"diffuseColor\s+({_FLOAT})\s+({_FLOAT})\s+({_FLOAT})")
+# Anything without a Material of its own: mid grey, so an unmatched mesh is
+# still styled rather than left for the importer to colour at random.
+FALLBACK_RGB = (0.6, 0.6, 0.6)
+
+
+# STEP lets a colour be named instead of given as numbers, and both OCC and
+# KiCad's own library models use that for the common ones. Onshape draws a
+# named colour as untinted default, so a black IC body arrives the same grey
+# as everything else. ISO 10303-46 fixes the meaning of each name, so the
+# substitution is exact, not a guess.
+PRE_DEFINED_RGB = {
+    "black": (0.0, 0.0, 0.0),
+    "white": (1.0, 1.0, 1.0),
+    "red": (1.0, 0.0, 0.0),
+    "green": (0.0, 1.0, 0.0),
+    "blue": (0.0, 0.0, 1.0),
+    "yellow": (1.0, 1.0, 0.0),
+    "magenta": (1.0, 0.0, 1.0),
+    "cyan": (0.0, 1.0, 1.0),
+}
+_PRE_DEFINED = re.compile(
+    r"#(\d+)\s*=\s*DRAUGHTING_PRE_DEFINED_COLOUR\s*\(\s*'([^']*)'\s*\)\s*;")
+
+
+def expand_predefined_colours(text):
+    """Rewrite DRAUGHTING_PRE_DEFINED_COLOUR entities as COLOUR_RGB.
+
+    Same entity id, so every STYLED_ITEM that points at it keeps working;
+    only the record itself changes. Returns (text, n_rewritten).
+    """
+    def sub(m):
+        rgb = PRE_DEFINED_RGB.get(m.group(2).strip().lower())
+        if rgb is None:
+            return m.group(0)
+        return (f"#{m.group(1)} = COLOUR_RGB ( '{m.group(2)}', "
+                f"{rgb[0]:.10f}, {rgb[1]:.10f}, {rgb[2]:.10f} ) ;")
+    out, n = _PRE_DEFINED.subn(sub, text)
+    return out, n
 
 
 def parse_wrl(path):
-    """Yield (points, faces) per IndexedFaceSet, points in mm."""
+    """Yield (points, faces, rgb) per IndexedFaceSet, points in mm.
+
+    The Material sits in the same Shape node as the geometry and always
+    ahead of it, so the colour of a mesh is the last diffuseColor before
+    its point block.
+    """
     text = open(path, errors="replace").read()
     points = [(m.start(), m.group(1)) for m in POINT_BLOCK.finditer(text)]
     indexes = [(m.start(), m.group(1)) for m in INDEX_BLOCK.finditer(text)]
+    colours = [(m.start(), tuple(float(v) for v in m.groups()))
+               for m in DIFFUSE.finditer(text)]
     for ppos, pblock in points:
         follow = [(ipos, iblock) for ipos, iblock in indexes if ipos > ppos]
         if not follow:
@@ -61,7 +127,8 @@ def parse_wrl(path):
         if len(face) >= 3:
             faces.append(tuple(face))
         if pts and faces:
-            yield pts, faces
+            before = [rgb for cpos, rgb in colours if cpos < ppos]
+            yield pts, faces, (before[-1] if before else FALLBACK_RGB)
 
 
 def triangulate(face):
@@ -260,22 +327,56 @@ def _solidify(shape):
     return solids, opened
 
 
-def build_shape(meshes, cap=True, tol=1e-4):
+def unify(shape):
+    """Merge coplanar faces. Returns the original if that goes wrong.
+
+    Every facet of the mesh arrives as its own planar face, so a flat box
+    side is dozens of triangles and a STEP importer draws every seam.
+    UnifySameDomain fuses faces that share a surface. It is not always
+    safe on a tessellated solid, so the result is kept only when it is
+    still a valid shape of the same volume.
+    """
+    from OCP.BRepCheck import BRepCheck_Analyzer
+    from OCP.BRepGProp import BRepGProp
+    from OCP.GProp import GProp_GProps
+    from OCP.ShapeUpgrade import ShapeUpgrade_UnifySameDomain
+
+    def volume(s):
+        props = GProp_GProps()
+        BRepGProp.VolumeProperties_s(s, props)
+        return props.Mass()
+
+    before = volume(shape)
+    try:
+        up = ShapeUpgrade_UnifySameDomain(shape, True, True, False)
+        up.Build()
+        out = up.Shape()
+    except Exception:
+        return shape, False
+    if not BRepCheck_Analyzer(out).IsValid():
+        return shape, False
+    after = volume(out)
+    if abs(after - before) > max(1e-9, abs(before) * 1e-6):
+        return shape, False
+    return out, True
+
+
+def build_shape(meshes, cap=True, tol=1e-4, merge=True):
     """Sew each IndexedFaceSet on its own into a closed solid.
 
     Sewing all meshes as one soup hands back whatever shells fall out and
     STEPControl_AsIs then writes those shells verbatim, which is what made
     every importer show loose surfaces. Per mesh, cap, solid.
+
+    Returns [(shape, rgb)] rather than one compound: the colour is per
+    mesh, and the writer needs each shape separately to label it.
     """
-    from OCP.BRep import BRep_Builder
     from OCP.BRepBuilderAPI import BRepBuilderAPI_Sewing
-    from OCP.TopoDS import TopoDS_Compound
 
-    builder, comp = BRep_Builder(), TopoDS_Compound()
-    builder.MakeCompound(comp)
-    n_faces = n_caps = n_solids = n_open = 0
+    items = []
+    n_faces = n_caps = n_solids = n_open = n_merged = 0
 
-    for pts, faces in meshes:
+    for pts, faces, rgb in meshes:
         tris = []
         for face in faces:
             tris.extend(triangulate(face))
@@ -303,19 +404,47 @@ def build_shape(meshes, cap=True, tol=1e-4):
         sew.Perform()
         solids, opened = _solidify(sew.SewedShape())
         for s_ in solids:
-            builder.Add(comp, s_)
+            if merge:
+                s_, done = unify(s_)
+                n_merged += done
+            items.append((s_, rgb))
         for s_ in opened:
-            builder.Add(comp, s_)
+            items.append((s_, rgb))
         n_solids += len(solids)
         n_open += len(opened)
-    return comp, n_faces, n_caps, n_solids, n_open
+    return items, n_faces, n_caps, n_solids, n_open, n_merged
 
 
-def export_step(shape, out):
-    from OCP.STEPControl import (STEPControl_Writer, STEPControl_AsIs,
-                                 STEPControl_Controller)
+def export_step(items, out, name=None):
+    """Write [(shape, rgb)] as ONE named STEP part, each solid coloured.
+
+    STEPCAFControl_Writer, not STEPControl_Writer: colour rides on an
+    XCAF label beside the shape, and only the CAF writer emits the
+    STYLED_ITEM records an importer reads.
+
+    The solids go in as one compound under a single named label, and the
+    colours onto sub-shape labels beneath it. Adding them as separate top
+    labels also works and colours correctly, but OCC then names each
+    product after its shape type, so the board arrives in Onshape with a
+    tree full of parts called SOLID and SHELL instead of the model name.
+
+    The colour goes in as sRGB and comes out as the same numbers. OCC 7.9
+    holds Quantity_Color in LINEAR rgb and converts on write, so handing
+    it a .wrl diffuseColor as Quantity_TOC_RGB writes a value gamma
+    steps too light: 0.2235 arrived in the file as 0.5101.
+    """
+    from OCP.BRep import BRep_Builder
+    from OCP.STEPCAFControl import STEPCAFControl_Writer
+    from OCP.STEPControl import STEPControl_AsIs, STEPControl_Controller
     from OCP.IFSelect import IFSelect_RetDone
     from OCP.Interface import Interface_Static
+    from OCP.Quantity import Quantity_Color, Quantity_TOC_sRGB
+    from OCP.TCollection import TCollection_ExtendedString
+    from OCP.TDataStd import TDataStd_Name
+    from OCP.TDocStd import TDocStd_Document
+    from OCP.TopoDS import TopoDS_Compound
+    from OCP.XCAFDoc import (XCAFDoc_ColorSurf, XCAFDoc_ColorGen,
+                             XCAFDoc_DocumentTool)
     # The write.* statics do not exist until the STEP controller registers
     # them, so setting one before this call is silently a no-op.
     STEPControl_Controller.Init_s()
@@ -327,40 +456,204 @@ def export_step(shape, out):
     # solids, same volume and same bounding box. It also stops
     # model_audit.py counting those splines as modelled LCEDA artwork.
     Interface_Static.SetIVal_s("write.surfacecurve.mode", 0)
-    w = STEPControl_Writer()
-    w.Transfer(shape, STEPControl_AsIs)
+    doc = TDocStd_Document(TCollection_ExtendedString("XmlOcaf"))
+    shapes = XCAFDoc_DocumentTool.ShapeTool_s(doc.Main())
+    colours = XCAFDoc_DocumentTool.ColorTool_s(doc.Main())
+    builder, comp = BRep_Builder(), TopoDS_Compound()
+    builder.MakeCompound(comp)
+    for shape, _ in items:
+        builder.Add(comp, shape)
+    top = shapes.AddShape(comp, False)
+    TDataStd_Name.Set_s(top, TCollection_ExtendedString(
+        name or os.path.splitext(os.path.basename(out))[0]))
+    for shape, rgb in items:
+        label = shapes.AddSubShape(top, shape)
+        colour = Quantity_Color(*rgb, Quantity_TOC_sRGB)
+        # Surf styles the faces, Gen is the fallback an importer reads when
+        # it does not look at surface styles. Both, or the part is grey in
+        # one viewer and coloured in the next.
+        colours.SetColor(label, colour, XCAFDoc_ColorSurf)
+        colours.SetColor(label, colour, XCAFDoc_ColorGen)
+    w = STEPCAFControl_Writer()
+    w.Transfer(doc, STEPControl_AsIs)
     if w.Write(out) != IFSelect_RetDone:
         raise RuntimeError(f"STEP write failed: {out}")
+    # OCC writes pure black and pure white as named colours, so a model
+    # whose body is 0 0 0 would still land unstyled in Onshape.
+    with open(out, encoding="utf8", errors="surrogateescape") as fh:
+        text = fh.read()
+    text, n = expand_predefined_colours(text)
+    if n:
+        with open(out, "w", encoding="utf8", errors="surrogateescape") as fh:
+            fh.write(text)
 
 
-def bbox(path_or_meshes):
-    pts = [p for pts, _ in path_or_meshes for p in pts]
+def bbox(meshes):
+    pts = [p for pts, _, _ in meshes for p in pts]
     cols = list(zip(*pts))
     return tuple(max(c) - min(c) for c in cols)
 
 
+OUR_HEADER = "Open CASCADE STEP processor"
+CURVED = re.compile(r"CYLINDRICAL_SURFACE|CONICAL_SURFACE|SPHERICAL_SURFACE|"
+                    r"TOROIDAL_SURFACE|B_SPLINE_SURFACE")
+
+
+def colour_from_wrl(step, wrl, meshes, near_mm=0.05):
+    """Add the .wrl colours to an existing STEP without touching geometry.
+
+    For a real B-rep the mesh rebuild is a downgrade: it trades cylinders
+    for hundreds of flat facets and a much larger file. So the solids are
+    read back, matched to the .wrl shape that covers them, and written out
+    again with that shape's colour.
+
+    Matching is per VERTEX, not per bounding box. A .wrl carries one mesh
+    per material, so the sixteen contacts of a USB-C are a single mesh
+    whose box spans the whole connector and matches no one solid; but
+    every vertex of a solid sits on the mesh that drew it. Each solid
+    takes the colour of the mesh holding the most vertices within near_mm
+    of its own. The two are the same geometry, so that is a near-exact
+    vote rather than a guess.
+    """
+    import numpy as np
+    from OCP.IFSelect import IFSelect_RetDone
+    from OCP.STEPControl import STEPControl_Reader
+    from OCP.TopAbs import TopAbs_SOLID, TopAbs_VERTEX
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+    from OCP.BRep import BRep_Tool
+
+    reader = STEPControl_Reader()
+    if reader.ReadFile(step) != IFSelect_RetDone:
+        raise RuntimeError(f"cannot read {step}")
+    reader.TransferRoots()
+    shape = reader.OneShape()
+
+    clouds = [(np.array(pts, dtype=float), rgb) for pts, _, rgb in meshes]
+    biggest = max(clouds, key=lambda c: len(c[0]))[1]
+    items, matched = [], 0
+    exp = TopExp_Explorer(shape, TopAbs_SOLID)
+    while exp.More():
+        solid = TopoDS.Solid_s(exp.Current())
+        exp.Next()
+        vexp, verts = TopExp_Explorer(solid, TopAbs_VERTEX), []
+        while vexp.More():
+            p = BRep_Tool.Pnt_s(TopoDS.Vertex_s(vexp.Current()))
+            verts.append((p.X(), p.Y(), p.Z()))
+            vexp.Next()
+        if not verts:
+            items.append((solid, biggest))
+            continue
+        v = np.array(verts, dtype=float)
+        best, votes = None, -1
+        for cloud, rgb in clouds:
+            d = np.abs(v[:, None, :] - cloud[None, :, :]).sum(axis=2)
+            hit = int((d.min(axis=1) <= near_mm).sum())
+            if hit > votes:
+                best, votes = rgb, hit
+        if votes > 0:
+            matched += 1
+        items.append((solid, best if votes > 0 else biggest))
+    export_step(items, step)
+    return len(items), matched
+
+
+def rebuildable(root, force=False):
+    """Every .step under root that this script wrote and that has no colour.
+
+    Both conditions matter. The header keeps a vendor B-rep from being
+    replaced with a mesh; the missing colour is what a rebuild is for, so
+    a model already carrying its .wrl colours is left alone and the walk
+    is idempotent. force drops the colour test, for when this script
+    itself changed and every model it owns has to be written again.
+    """
+    out = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames
+                       if d not in ('.git', '.history', 'backups', 'archive',
+                                    'export', 'node_modules', '__pycache__')]
+        for name in sorted(filenames):
+            if not name.endswith('.step'):
+                continue
+            step = os.path.join(dirpath, name)
+            wrl = step[:-5] + '.wrl'
+            if not os.path.exists(wrl):
+                continue
+            with open(step, errors='replace') as fh:
+                head = fh.read(400)
+            if OUR_HEADER not in head:
+                continue
+            if not force:
+                with open(step, errors='replace') as fh:
+                    if 'COLOUR_RGB' in fh.read():
+                        continue
+            out.append((wrl, step))
+    return out
+
+
+def rebuild(root, merge=True, force=False):
+    todo = rebuildable(root, force=force)
+    print(f"{len(todo)} model(s) to rebuild under {root}\n")
+    for wrl, step in todo:
+        was = os.path.getsize(step)
+        meshes = list(parse_wrl(wrl))
+        if not meshes:
+            print(f"  SKIP  {step}: no geometry parsed from the .wrl")
+            continue
+        n_rgb = len({rgb for _, _, rgb in meshes})
+        with open(step, errors='replace') as fh:
+            curved = CURVED.search(fh.read()) is not None
+        if curved:
+            # A real B-rep, whatever wrote it. Colour it, keep the geometry.
+            n_solids, matched = colour_from_wrl(step, wrl, meshes)
+            note = f"coloured in place, {matched}/{n_solids} solids matched"
+        else:
+            items, n, caps, solids, opened, merged = build_shape(
+                meshes, merge=merge)
+            export_step(items, step)
+            note = (f"rebuilt, {solids} solids, {merged} merged, "
+                    f"{opened} open shell(s)")
+        now = os.path.getsize(step)
+        print(f"  {os.path.relpath(step, root)}\n"
+              f"      {n_rgb} colour(s), {note}, "
+              f"{was / 1e6:.2f} -> {now / 1e6:.2f} MB")
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("wrl")
+    ap.add_argument("wrl", nargs='?')
     ap.add_argument("-o", "--out")
     ap.add_argument("--check", action="store_true")
     ap.add_argument("--no-cap", action="store_true",
                     help="do not close boundary loops (leaves open shells)")
+    ap.add_argument("--no-unify", action="store_true",
+                    help="do not merge coplanar facets into one face")
+    ap.add_argument("--rebuild", metavar="ROOT",
+                    help="regenerate every uncoloured .step this script wrote")
+    ap.add_argument("--force", action="store_true",
+                    help="with --rebuild: redo the coloured ones too")
     a = ap.parse_args()
+    if a.rebuild:
+        return rebuild(os.path.expanduser(a.rebuild), merge=not a.no_unify,
+                       force=a.force)
+    if not a.wrl:
+        ap.error("a .wrl is required unless --rebuild is given")
     meshes = list(parse_wrl(a.wrl))
     if not meshes:
         sys.exit(f"no IndexedFaceSet geometry parsed from {a.wrl}")
     dims = bbox(meshes)
-    n_pts = sum(len(p) for p, _ in meshes)
+    n_pts = sum(len(p) for p, _, _ in meshes)
+    n_rgb = len({rgb for _, _, rgb in meshes})
     print(f"{os.path.basename(a.wrl)}: {len(meshes)} meshes, {n_pts} points, "
-          f"bbox {'x'.join(f'{d:.2f}' for d in dims)} mm")
+          f"{n_rgb} colour(s), bbox {'x'.join(f'{d:.2f}' for d in dims)} mm")
     if a.check:
         return
     out = a.out or os.path.splitext(a.wrl)[0] + ".step"
-    shape, n, caps, solids, opened = build_shape(meshes, cap=not a.no_cap)
-    export_step(shape, out)
+    items, n, caps, solids, opened, merged = build_shape(
+        meshes, cap=not a.no_cap, merge=not a.no_unify)
+    export_step(items, out)
     print(f"wrote {out} ({n} faces + {caps} caps, "
-          f"{solids} solids, {opened} open shells)")
+          f"{solids} solids, {merged} merged, {opened} open shells)")
     if opened:
         print("  warning: open shells left, those import as surfaces",
               file=sys.stderr)
