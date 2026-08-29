@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Assembly drawings for fab reviewers: one image per side with every pad,
-pin 1 in red on every part where orientation matters (more than two pads, or
-a D/Q/U/X reference), reference designators, fab/silk outlines and the board
-edge (board drawings and footprint edge items, the ESCs keep theirs in a
+pin 1 in red and the reference on every part where orientation matters (more
+than two pads, or a D/Q/U/X/J reference); plain passives are drawn unlabeled
+so the drawing stays readable; fab/silk outlines and the board edge (board drawings and footprint edge items, the ESCs keep theirs in a
 footprint). Made after the first external turnkey RFQs, when every fab asked
 how to verify polarity and rotation from a positions file alone.
 
@@ -134,7 +134,8 @@ def draw_side(board, side, stem, out_dir, dpi, png):
             else:
                 pads.append((poly, is_dnp))
         pos = fp.GetPosition()
-        refs.append((mm(pos.x), mm(pos.y), ref, is_dnp))
+        if polar and not is_dnp:
+            refs.append((mm(pos.x), mm(pos.y), ref, is_dnp))
 
     title = "%s   %s SIDE%s" % (stem, side.upper(), "   (MIRRORED: viewed from below)" if not top else "")
     ex = sorted(excluded)
@@ -196,6 +197,16 @@ def draw_side(board, side, stem, out_dir, dpi, png):
     return out
 
 
+def render(board_path, stem, out_dir, dpi=300, png=True):
+    """Render both sides; returns the list of files written."""
+    board = pcbnew.LoadBoard(board_path)
+    os.makedirs(out_dir, exist_ok=True)
+    files = []
+    for side in ("top", "bottom"):
+        files += draw_side(board, side, stem, out_dir, dpi, png)
+    return files
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("board")
@@ -204,13 +215,10 @@ def main():
     ap.add_argument("--dpi", type=int, default=600)
     ap.add_argument("--no-png", action="store_true")
     a = ap.parse_args()
-    board = pcbnew.LoadBoard(a.board)
     stem = a.stem or os.path.splitext(os.path.basename(a.board))[0]
     out_dir = a.out or os.path.join(os.path.dirname(os.path.abspath(a.board)), "production")
-    os.makedirs(out_dir, exist_ok=True)
-    for side in ("top", "bottom"):
-        for f in draw_side(board, side, stem, out_dir, a.dpi, not a.no_png):
-            print(f)
+    for f in render(a.board, stem, out_dir, a.dpi, not a.no_png):
+        print(f)
 
 
 if __name__ == "__main__":

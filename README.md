@@ -29,11 +29,16 @@ $KPY ~/OpenDrone/software/OpenDrone-Scripts/kicad/export_step.py --all
 
 `render_board.py` additionally needs ImageMagick (`magick`).
 
-`assembly_drawing.py <board.kicad_pcb> --out DIR --stem NAME` draws one PNG per
-side for fab reviewers: pads, pin 1 in red on every orientation-sensitive part,
-references, fab/silk outlines, board edge; bottom view mirrored. Needs
-`rsvg-convert` or `magick` for PNG (SVG always). Send these with every turnkey
-RFQ so the assembler can check rotation and polarity against the positions file.
+`handoff_pack.py <board.kicad_pcb> --fab pcbgogo --qty 250` is the one command
+from board to fab handoff: runs `quote_pack.py`, `gerber_check.py` (independent
+DFM read of the gerber zip: file set, min line width per layer, drills,
+outline closure, features outside the outline, KiCad DRC), then builds
+`production/handoff-<rev>/<stem>_<fab>.zip` with gerbers, the fab's BOM
+template (duplicate designators renamed to the FT `_2/_3` names), a
+positions file limited to BOM parts, two assembly drawings (pin 1 red, bottom
+mirrored, from `assembly_drawing.py`) and a one-page order sheet with every
+form value measured from the board. `--copper`, `--tg`, `--thickness`,
+`--note` override what cannot be measured. Needs `rsvg-convert` or `magick`.
 
 ---
 
