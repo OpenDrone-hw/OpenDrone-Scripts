@@ -28,7 +28,7 @@ rules), min drill (smallest hole actually used), placements per side.
 Not measurable and therefore flags: --tg (default 170), --qty (250),
 --note (free lines appended under PARTS, repeatable).
 
-Fabs: pcbgogo (more can be added in ORDER_SHEETS). Run with KiCad's Python.
+Fabs: pcbgogo, nextpcb, makerpcb (the latter two get the portal-safe gerber zip). Run with KiCad's Python.
 """
 import argparse, collections, csv, json, os, re, shutil, subprocess, sys, zipfile
 
@@ -150,7 +150,7 @@ def build_bom_positions(pack, stem, fab, out):
         out_rows.append(r)
         qty += int(r['Quantity'])
     writer = getattr(quote_pack, f'write_{fab}')
-    writer(out_rows, os.path.join(out, f'{stem}_bom_{fab}.xlsx'))
+    writer(out_rows, os.path.join(out, f'{stem}_bom_{fab}.{BOM_EXT[fab]}'))
     keep_rows = [x for x in pos if x['Designator'] in keep]
     with open(os.path.join(out, f'{stem}_positions_{fab}.csv'), 'w', newline='') as f:
         w = csv.writer(f)
@@ -222,7 +222,76 @@ SHIPPING AND PAYMENT
     return body
 
 
-ORDER_SHEETS = {'pcbgogo': sheet_pcbgogo}
+def common_block(stem, m, qty_order, placements, sides, dups, lines, tg, notes, fab, bomext, gerber_note, qty_note, via_note):
+    L, W = m['size_mm']
+    dup = ("No duplicate names." if not dups else
+           "Some parts exist 2 or 3 times with the same name in KiCad (%s). In the BOM and "
+           "positions file they are named %s_2, %s_3. Place every line." % (", ".join(dups), dups[0], dups[0]))
+    return f"""{stem}  {fab.upper()} ORDER SHEET
+Incutec BV, Leuven, Belgium.  Contact: Stan Coene, stan@incutec.eu
+
+FILES
+  {stem}.zip                    Gerber + drill (KiCad). {gerber_note}
+  {stem}_bom_{fab}.{bomext}       BOM, {fab} template, {lines} lines
+  {stem}_positions_{fab}.csv  Pick and place, mm, only parts in the BOM
+  {stem}_assembly_top.png       Drawing top side. RED pad = pin 1
+  {stem}_assembly_bottom.png    Drawing bottom side, MIRRORED (view from below). RED pad = pin 1
+
+PCB
+  Material            FR-4, TG {tg}
+  Size (single)       {L:.1f} x {W:.1f} mm
+  Quantity            {qty_order} single boards. {qty_note} This is a firm production order, not a prototype.
+  Panel               Panel by you. We suggest 5 x 5 boards per panel; you decide the best panel and depanel method. Ship DEPANELED, edges cleaned (no tab remnants).
+  Layers              {m['layers']}
+  Thickness           {m['thickness_mm']:.1f} mm
+  Min track/spacing   {m['min_track_mm']:.2f} mm / {m['min_clearance_mm']:.2f} mm ({track_tier(m['min_track_mm'], m['min_clearance_mm'])})
+  Min hole            {m['min_drill_mm']:.2f} mm
+  Solder mask         Green.  Silkscreen: white
+  Surface finish      ENIG, 1U" min. No HASL.
+  Finished copper     {m['copper']}
+  Vias                Filled and capped (IPC-4761 Type VII). {m['via_in_pad']} vias are inside SMD pads. {via_note}
+  Marking             No order number on the board. No castellated holes, no edge plating.
+
+ASSEMBLY
+  Type                Turnkey (you buy all parts)
+  Quantity            {qty_order} boards. We want to start production as soon as review passes; please tell us the fastest path.
+  Unique parts        {lines}
+  SMD parts / board   {placements}  (top {sides.get('top', 0)}, bottom {sides.get('bottom', 0)})
+  Through-hole parts  0
+  Assembly sides      {'Double' if sides.get('top') and sides.get('bottom') else 'Single'}
+  Stencil             Yes, {'top + bottom' if sides.get('top') and sides.get('bottom') else 'one side'}
+  X-ray test          No.  Conformal coating: No.  Inspection: 100% AOI
+  Before production   send DFM report + assembly drawing for our approval
+
+PARTS
+  The BOM is final and correct. If a different part gives a better price, please propose it (MPN, datasheet, price); we approve before production.
+  {dup}
+  Rotation in positions file = JLCPCB / KiCad convention. Check pin 1 against the RED pad in the drawings.
+""" + "".join(f"  {n}\n" for n in notes) + """
+SHIPPING AND PAYMENT
+  DAP (Incoterms 2020), DHL, to: Incutec BV, Stapelhuisstraat 15, 3000 Leuven, Belgium
+  VAT / EORI: BE1038934039. Incutec is importer of record. NO DDP, no Belgian VAT, no duty in the quote.
+  Payment: bank wire.
+"""
+
+
+def sheet_nextpcb(stem, m, qty_order, placements, sides, dups, lines, tg, notes):
+    return common_block(stem, m, qty_order, placements, sides, dups, lines, tg, notes, 'nextpcb', 'csv',
+        "Drill maps and attribute comments removed for your parser.",
+        f"Your form counts panels: with 5 x 5 that is {-(-qty_order // 25)} panels = {qty_order} boards. Please verify the single size on the form.",
+        'Form option: "Non-Conductive Fill & Cap (VII)".')
+
+
+def sheet_makerpcb(stem, m, qty_order, placements, sides, dups, lines, tg, notes):
+    return common_block(stem, m, qty_order, placements, sides, dups, lines, tg, notes, 'makerpcb', 'xlsx',
+        "Drill maps and attribute comments removed for your parser.",
+        f"{qty_order} single boards, not panels. Board size in the gerbers is exact; the form only takes whole mm.",
+        'Resin plug + cap; quote after your review is fine.')
+
+
+BOM_EXT = {'pcbgogo': 'xlsx', 'nextpcb': 'csv', 'makerpcb': 'xlsx'}
+GERBER_SRC = {'pcbgogo': '{stem}.zip', 'nextpcb': '{stem}_portal.zip', 'makerpcb': '{stem}_portal.zip'}
+ORDER_SHEETS = {'pcbgogo': sheet_pcbgogo, 'nextpcb': sheet_nextpcb, 'makerpcb': sheet_makerpcb}
 
 
 def main():
@@ -257,7 +326,7 @@ def main():
         shutil.rmtree(work)
     os.makedirs(work)
 
-    shutil.copy2(os.path.join(pack, f'{stem}.zip'), work)
+    shutil.copy2(os.path.join(pack, GERBER_SRC[a.fab].format(stem=stem)), os.path.join(work, f'{stem}.zip'))
     placements, sides, dups, lines = build_bom_positions(pack, stem, a.fab, work)
     m = measure(board, a.copper)
     if abs(m['thickness_mm'] - a.thickness) > 0.05:
