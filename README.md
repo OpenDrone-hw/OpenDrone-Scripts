@@ -875,6 +875,67 @@ stroke widths only, nothing structural. Close KiCad before running it.
 
 ---
 
+## `kicad/import_part.py`: import an LCSC part into a board repo
+
+easyeda2kicad is the only sanctioned importer, and its raw output is never
+usable as-is. The same six repairs are needed every time, so they are a script
+rather than a habit:
+
+1. It emits KiCad 6-era s-expressions; the repos are on KiCad 10.
+2. It types every symbol pin `unspecified`, so ERC sees nothing.
+3. It writes the symbol's Footprint property as `C1234567:NAME`, a library
+   nickname that exists in no repo.
+4. It points the footprint's 3D model at the absolute path it wrote to, and at
+   the `.wrl` rather than the `.step`.
+5. It leaves `Description` empty on both symbol and footprint.
+6. Its courtyards are frequently smaller than the part body. Of the four MR30
+   variants imported on 2026-08-29, three were wrong, and `MR30PW-M30`'s
+   excluded all three of its own power pins.
+
+```bash
+python3 kicad/import_part.py C30170185 --repo ~/OpenDrone/hardware/OpenESC-20x20/hardware
+python3 kicad/import_part.py C30170185 C19268033 --repo <hardware-dir> --ref J \
+    --description "MR30 3-pin THT power connector, male, PCB mount" \
+    --description "MR30 3-pin THT power connector, female, PCB mount"
+python3 kicad/import_part.py C30170185 --repo <hardware-dir> --dry-run
+```
+
+`--repo` is the board's `hardware/` directory, the one holding `fp-lib-table`.
+Library naming is per repo and is read from that repo's own `sym-lib-table` and
+`fp-lib-table`, never assumed: OpenESC-20x20 is `components.kicad_sym` +
+`4in1ESC.pretty`, the hardware-template is `lib.kicad_sym` + `lib.pretty`. A
+repo with more than one project-local library is refused rather than guessed at.
+`--ref` defaults to `J`, `--pin-type` to `passive`, `--description` is repeated
+once per part in the same order as the ids.
+
+The trap this script exists to avoid: `kicad-cli sym upgrade` rewrites **every**
+symbol in the library, not just the new one. The board symbol libraries are
+hand-maintained and partly hand-spliced, so running it on the real file is a
+large meaningless diff over other people's work. The script upgrades a throwaway
+*copy* with the new symbol appended, lifts only the new block out of that copy,
+splices that into the real file, and then asserts the pre-existing bytes are
+byte-identical. The MR30 import came out 746 insertions, 0 deletions.
+
+It verifies before returning: paren balance, every new symbol sitting at depth 1,
+and an SVG render of **every** symbol in the library plus each new footprint. The
+render sweep is the check that the splice did not corrupt anything else.
+
+System python3, not KiCad's: text surgery plus `kicad-cli`, no `pcbnew`. Needs
+`pip install easyeda2kicad`.
+
+Two things the script cannot do for you:
+
+- **Pick the variant.** Male and female of the same connector are different
+  parts with different drills, and LCSC listings are not trustworthy on this.
+  C30170185 is listed as `MR30PB-M30.A.G.Y` but the datasheet LCSC serves for it
+  is `MR30APB-M`, rated 20 A, not the 30 A the part name implies. Check the
+  datasheet drawing against the imported pad geometry before laying anything out.
+- **Restart KiCad.** Library tables are cached at process start, so a full
+  Cmd+Q and reopen is needed. Close the Symbol Editor first: it holds the whole
+  library in memory and saving from it overwrites the splice.
+
+---
+
 ## What deliberately stayed in the board repos
 
 Not everything shared a name by accident. These are board-specific and belong
