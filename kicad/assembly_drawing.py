@@ -137,10 +137,14 @@ def draw_side(board, side, stem, out_dir, dpi, png):
         refs.append((mm(pos.x), mm(pos.y), ref, is_dnp))
 
     title = "%s   %s SIDE%s" % (stem, side.upper(), "   (MIRRORED: viewed from below)" if not top else "")
-    sub = "RED = pin 1 / pad 1 / cathode.  Grey hatch = not placed: %s.  Outline approx. %.1f x %.1f mm" % (
-        ", ".join(sorted(excluded)) if excluded else "none", w, h)
+    ex = sorted(excluded)
+    exs = "none" if not ex else (", ".join(ex) if len(ex) <= 8 else "%d pads/test points (%s ...)" % (len(ex), ", ".join(ex[:4])))
+    sub = "RED = pin 1 / pad 1 / cathode.  Grey hatch = not placed: %s.  Outline approx. %.1f x %.1f mm" % (exs, w, h)
     scale = 40  # px per mm in SVG user units
-    W = max((w + 2 * margin) * scale, 0.62 * scale * max(len(title), 0.7 * len(sub)))
+    W = max((w + 2 * margin) * scale, 30 * scale)
+    # shrink header fonts until both lines fit the canvas width
+    f_title = min(1.15 * scale, (W - 24) / (0.6 * len(title)))
+    f_sub = min(0.8 * scale, (W - 24) / (0.55 * len(sub)))
     H = (h + 2 * margin + 8) * scale  # room for title
 
     def P(x, y):
@@ -159,8 +163,8 @@ def draw_side(board, side, stem, out_dir, dpi, png):
              '<rect width="100%" height="100%" fill="white"/>',
              '<defs><pattern id="hatch" patternUnits="userSpaceOnUse" width="4" height="4">'
              '<path d="M0,4 l4,-4" stroke="#999" stroke-width="1"/></pattern></defs>',
-             '<text x="12" y="%.0f" font-family="Helvetica,Arial" font-size="%.0f" font-weight="bold">%s</text>' % (3.2 * scale, 1.15 * scale, esc(title)),
-             '<text x="12" y="%.0f" font-family="Helvetica,Arial" font-size="%.0f">%s</text>' % (5.6 * scale, 0.8 * scale, esc(sub)),
+             '<text x="12" y="%.0f" font-family="Helvetica,Arial" font-size="%.1f" font-weight="bold">%s</text>' % (3.2 * scale, f_title, esc(title)),
+             '<text x="12" y="%.0f" font-family="Helvetica,Arial" font-size="%.1f">%s</text>' % (5.6 * scale, f_sub, esc(sub)),
              segs_svg(edge, "#000", 1.2)]
     for poly, is_dnp in pads:
         parts.append(poly_svg(poly, "url(#hatch)" if is_dnp else "#c9c9c9", "#777", 0.4))
