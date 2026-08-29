@@ -29,6 +29,12 @@ $KPY ~/OpenDrone/software/OpenDrone-Scripts/kicad/export_step.py --all
 
 `render_board.py` additionally needs ImageMagick (`magick`).
 
+`assembly_drawing.py <board.kicad_pcb> --out DIR --stem NAME` draws one PNG per
+side for fab reviewers: pads, pin 1 in red on every orientation-sensitive part,
+references, fab/silk outlines, board edge; bottom view mirrored. Needs
+`rsvg-convert` or `magick` for PNG (SVG always). Send these with every turnkey
+RFQ so the assembler can check rotation and polarity against the positions file.
+
 ---
 
 ## Release procedure
