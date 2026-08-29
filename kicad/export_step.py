@@ -87,6 +87,7 @@ Usage:
 import argparse
 import collections
 import glob
+import json
 import math
 import os
 import re
@@ -192,6 +193,64 @@ def product_name(repo, stem):
     if s in r or r in s:
         return repo if len(repo) >= len(stem) else stem
     return f"{repo}-{stem}"
+
+
+KICAD_SHARE = "/Applications/KiCad/KiCad.app/Contents/SharedSupport"
+KICAD_COMMON = os.path.expanduser("~/Library/Preferences/kicad/10.0/kicad_common.json")
+
+
+def kicad_path_vars(project_dir=None):
+    """Every path variable KiCad itself would substitute, one dict.
+
+    Not just the built-in ones. `OPENDRONE_LIB` is defined in KiCad's own
+    settings on this machine and in some repos' .kicad_pro instead, and a
+    tool that only knows the built-ins reads a board full of
+    ${OPENDRONE_LIB} paths as a board with no 3D models at all. That is
+    what had check_models reporting OpenAIO as missing 10 models and 20
+    footprints while kicad-cli, which does read those settings, exported
+    it complete.
+
+    Precedence follows KiCad: the project's own text_variables win over
+    the global settings, and the process environment is the last word.
+    """
+    out = {"KICAD10_3DMODEL_DIR": f"{KICAD_SHARE}/3dmodels",
+           "KICAD9_3DMODEL_DIR": f"{KICAD_SHARE}/3dmodels",
+           "KICAD8_3DMODEL_DIR": f"{KICAD_SHARE}/3dmodels",
+           "KISYS3DMOD": f"{KICAD_SHARE}/3dmodels",
+           "KICAD10_FOOTPRINT_DIR": f"{KICAD_SHARE}/footprints",
+           "KICAD9_FOOTPRINT_DIR": f"{KICAD_SHARE}/footprints"}
+    try:
+        with open(KICAD_COMMON, encoding="utf8") as fh:
+            out.update(json.load(fh).get("environment", {}).get("vars", {}) or {})
+    except (OSError, ValueError):
+        pass
+    if project_dir:
+        out["KIPRJMOD"] = project_dir
+        for pro in sorted(glob.glob(os.path.join(project_dir, "*.kicad_pro"))):
+            try:
+                with open(pro, encoding="utf8") as fh:
+                    out.update(json.load(fh).get("text_variables", {}) or {})
+            except (OSError, ValueError):
+                pass
+            break
+        out["KIPRJMOD"] = project_dir
+    for k in list(out):
+        if k in os.environ:
+            out[k] = os.environ[k]
+    return out
+
+
+def expand_path(path, project_dir=None, variables=None):
+    """Resolve ${VAR} and $(VAR) in a library uri or model filename."""
+    text = str(path)
+    variables = variables if variables is not None else kicad_path_vars(project_dir)
+    for _ in range(4):     # a variable may expand into another one
+        before = text
+        for var, value in variables.items():
+            text = text.replace("${%s}" % var, value).replace("$(%s)" % var, value)
+        if text == before:
+            break
+    return os.path.normpath(os.path.expanduser(text))
 
 
 def discover(root, only_repo=None, products_only=False):

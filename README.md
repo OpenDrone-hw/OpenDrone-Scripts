@@ -404,7 +404,19 @@ faceted faces. Needs `pip install cadquery-ocp`, system python.
 python3 kicad/wrl_to_step.py model.wrl -o model.step
 python3 kicad/wrl_to_step.py --rebuild ~/OpenDrone/hardware      # all of ours
 python3 kicad/wrl_to_step.py --rebuild ~/OpenDrone/hardware --force
+python3 kicad/wrl_to_step.py --fill-missing ~/OpenDrone/hardware
 ```
+
+**`--fill-missing` writes a .step beside every .wrl that has none**, and that
+is not cosmetic. `--subst-models` swaps a same-named .step in for each .wrl
+because KiCad's STEP exporter cannot read VRML; where there is nothing to swap
+in, kicad-cli **drops the component silently** and the board exports one part
+short. `check_models.py` does not catch it either: E3 wants a missing file and
+the .wrl is right there, E6 only compares when both exist. It cost OpenAIO its
+boot switch and its USB-C, and OpenFC-Core seven parts including the RP2355C.
+27 models written; the six it skips are `SolderPad_*.wrl`, which are a VRML
+`Box` primitive rather than an IndexedFaceSet, are in mm where the rest are in
+0.1 inch, and are not referenced by any product board.
 
 **`--rebuild` is the repeatable form and the one to use.** It walks a tree
 and regenerates every .step this script wrote that is missing colour,
@@ -627,8 +639,8 @@ nudges, applying it twice changes nothing, and a board that drifts back is
 pulled into line by a re-run. `--fixes` writes the library and the boards, the
 same two places `--map` does.
 
-Two failures put entries there, and `--audit` finds both from the files rather
-than from someone noticing in CAD:
+Three failures put entries there. `--audit` finds the first two from the files
+rather than from someone noticing in CAD; the third comes from `check_models`:
 
 - **Axis crossed.** KiCad's stock SOT-23 family models are drawn for KiCad's
   own footprints, which put pin 1 at (-1.1375, -0.95) with the pad rows along
@@ -638,6 +650,16 @@ than from someone noticing in CAD:
 - **Sunk.** A model authored entirely below its own origin sits inside the
   board. That is the SKY13373 RF switch on the RX boards (Z -0.870 to 0.001,
   needs +0.87) and the AP1606 on the FCs (needs +0.5).
+- **Board and library disagree** (check_models E5). The board copy is the one
+  that gets exported and looked at, so the board wins and the catalogue brings
+  every library copy to it. The USB-C libraries still carried the offset of the
+  model they were replaced with in August; the microSD copies were 0.5 mm out
+  in Y.
+
+What `--audit` cannot see is a pin-1 flip: a package end for end has its long
+axis in the right place and its bounding box unchanged. Those come from
+comparing pad 1 against the model's own convention, which is what the -BR
+entries below are.
 
 **The Z rotation sign is inverted, and this is the thing to remember.** KiCad's
 model rotation Z is the negative of the rotation that reaches the 3D scene: a

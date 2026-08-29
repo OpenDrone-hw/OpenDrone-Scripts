@@ -46,7 +46,7 @@ import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from export_step import ROOT, discover  # noqa: E402
+from export_step import ROOT, discover, expand_path  # noqa: E402
 
 GLOBAL_FP_TABLE = os.path.expanduser("~/Library/Preferences/kicad/10.0/fp-lib-table")
 
@@ -66,16 +66,14 @@ def parse_fp_lib_table(path):
 
 
 def expand(path, project_dir):
-    """Resolve KiCad path variables in a library uri or model filename."""
-    kicad_3d = "/Applications/KiCad/KiCad.app/Contents/SharedSupport/3dmodels"
-    kicad_fp = "/Applications/KiCad/KiCad.app/Contents/SharedSupport/footprints"
-    for var, value in (("KIPRJMOD", project_dir),
-                       ("KICAD10_3DMODEL_DIR", kicad_3d),
-                       ("KICAD9_3DMODEL_DIR", kicad_3d),
-                       ("KICAD10_FOOTPRINT_DIR", kicad_fp),
-                       ("KICAD9_FOOTPRINT_DIR", kicad_fp)):
-        path = path.replace("${%s}" % var, value).replace("$(%s)" % var, value)
-    return os.path.normpath(os.path.expanduser(path))
+    """Resolve KiCad path variables in a library uri or model filename.
+
+    Shared with export_step so this reads the SAME variables kicad-cli
+    does, KiCad's own settings and the project's text_variables included.
+    A hardcoded list of the built-ins used to report every ${OPENDRONE_LIB}
+    reference as a missing file.
+    """
+    return expand_path(path, project_dir)
 
 
 def model_tuple(model):

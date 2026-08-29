@@ -36,6 +36,7 @@ Usage:
     python3 wrl_to_step.py --check model.wrl     # parse and report only
     python3 wrl_to_step.py model.wrl --no-unify  # keep every facet a face
     python3 wrl_to_step.py --rebuild ~/OpenDrone/hardware   # every one of ours
+    python3 wrl_to_step.py --fill-missing ~/OpenDrone/hardware
 
 --rebuild walks a tree and regenerates every .step THIS SCRIPT wrote that
 is missing colour, next to its own .wrl. It matches on the OCC header, so
@@ -226,12 +227,18 @@ def _tri_face(pts, tri):
     if len(set(tri)) < 3:
         return None
     poly = BRepBuilderAPI_MakePolygon()
-    for i in tri:
-        poly.Add(gp_Pnt(*pts[i]))
-    poly.Close()
-    if not poly.IsDone():
+    try:
+        for i in tri:
+            poly.Add(gp_Pnt(*pts[i]))
+        poly.Close()
+        if not poly.IsDone():
+            return None
+        mk = BRepBuilderAPI_MakeFace(poly.Wire())
+    except Exception:
+        # A triangle with two coincident points below OCC's tolerance raises
+        # rather than reporting not-done. Dropping it loses nothing: it has
+        # no area. Some EasyEDA meshes carry hundreds.
         return None
-    mk = BRepBuilderAPI_MakeFace(poly.Wire())
     return mk.Face() if mk.IsDone() else None
 
 
@@ -591,6 +598,47 @@ def rebuildable(root, force=False):
     return out
 
 
+def missing_step(root):
+    """Every .wrl under root with no .step beside it.
+
+    `--subst-models` swaps a same-named .step in for each .wrl, because
+    KiCad's STEP exporter cannot read VRML. Where there is nothing to swap
+    in, kicad-cli drops the component silently and the board exports one
+    part short. check_models does not catch it: E3 wants a missing FILE
+    and the .wrl is right there, E6 only compares when both exist.
+    """
+    out = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames
+                       if d not in ('.git', 'export', 'node_modules', '__pycache__')
+                       and 'backup' not in d.lower() and 'archive' not in d.lower()
+                       and not d.startswith('.')]
+        for name in sorted(filenames):
+            if not name.endswith('.wrl'):
+                continue
+            wrl = os.path.join(dirpath, name)
+            stem = os.path.splitext(wrl)[0]
+            if not os.path.exists(stem + '.step') and not os.path.exists(stem + '.stp'):
+                out.append((wrl, stem + '.step'))
+    return out
+
+
+def fill_missing(root, merge=True):
+    todo = missing_step(root)
+    print(f"{len(todo)} .wrl under {root} with no .step to substitute\n")
+    for wrl, step in todo:
+        meshes = list(parse_wrl(wrl))
+        if not meshes:
+            print(f"  SKIP  {os.path.relpath(wrl, root)}: no geometry parsed")
+            continue
+        items, n, caps, solids, opened, merged = build_shape(meshes, merge=merge)
+        export_step(items, step)
+        print(f"  {os.path.relpath(step, root)}\n"
+              f"      {len({rgb for _, _, rgb in meshes})} colour(s), {solids} solids, "
+              f"{merged} merged, {opened} open shell(s), "
+              f"{os.path.getsize(step) / 1e6:.2f} MB")
+
+
 def rebuild(root, merge=True, force=False):
     todo = rebuildable(root, force=force)
     print(f"{len(todo)} model(s) to rebuild under {root}\n")
@@ -632,7 +680,12 @@ def main():
                     help="regenerate every uncoloured .step this script wrote")
     ap.add_argument("--force", action="store_true",
                     help="with --rebuild: redo the coloured ones too")
+    ap.add_argument("--fill-missing", metavar="ROOT",
+                    help="write a .step beside every .wrl that has none")
     a = ap.parse_args()
+    if a.fill_missing:
+        return fill_missing(os.path.expanduser(a.fill_missing),
+                            merge=not a.no_unify)
     if a.rebuild:
         return rebuild(os.path.expanduser(a.rebuild), merge=not a.no_unify,
                        force=a.force)
