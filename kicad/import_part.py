@@ -24,9 +24,14 @@ the new block out of that copy, and splices it into the real file, then
 asserts the pre-existing bytes are untouched.
 
 Library naming is per repo, not a convention: OpenESC-20x20 uses
-components.kicad_sym + 4in1ESC.pretty, the hardware-template uses
-lib.kicad_sym + lib.pretty. The nicknames are read from the repo's own
-sym-lib-table and fp-lib-table rather than assumed.
+components.kicad_sym + 4in1ESC.pretty, OpenESC-30x30 uses components +
+4in1ESC-30x30, everything else uses lib + lib. The target is read from the
+repo's own sym-lib-table and fp-lib-table, and is the entry sitting directly
+in hardware/ as ${KIPRJMOD}/<name>. That excludes the shared parts catalogue,
+which OpenFC-Core registers as a KiCad-Library submodule path and OpenAIO as
+${OPENDRONE_LIB} plus three alias nicknames: an import must never land there,
+because promotion into the catalogue is a deliberate step for parts already on
+a manufactured board.
 
 Needs easyeda2kicad (pip install easyeda2kicad) and KiCad 10's kicad-cli.
 Pure text surgery plus kicad-cli, so system python3 is fine; this one does
@@ -71,43 +76,63 @@ def run(cmd, **kw):
 
 # --- the repo's own library naming -----------------------------------------
 
-def read_lib_tables(hardware: Path):
+def read_lib_tables(hardware: Path, fp_override=None, sym_override=None):
     """Return (fp_nickname, pretty_dir, sym_lib_path, shapes_dir).
 
-    Both nicknames come from the repo's tables. A repo with more than one
-    local library is ambiguous and is refused rather than guessed at.
+    The target is the repo's *own* import library: the entry whose file sits
+    directly in hardware/, as `${KIPRJMOD}/<name>.pretty`. That deliberately
+    rejects the shared parts catalogue, which OpenFC-Core registers as
+    `${KIPRJMOD}/KiCad-Library/footprint/OpenDrone.pretty` (a submodule) and
+    OpenAIO as `${OPENDRONE_LIB}/...` plus three alias nicknames pointing at
+    the same files. Writing an import into the catalogue would be wrong twice
+    over: it is someone else's repo, and membership there is a deliberate
+    promotion step, not a side effect of drawing a part.
     """
-    def local_entries(table: Path):
+    def own_entries(table: Path, suffix: str):
         if not table.is_file():
             return []
-        text = table.read_text()
         out = []
-        for name, uri in re.findall(r'\(lib \(name "([^"]*)"\).*?\(uri "([^"]*)"\)', text):
-            if "${KIPRJMOD}" in uri:
-                out.append((name, uri.replace("${KIPRJMOD}", str(hardware))))
+        for name, uri in re.findall(r'\(lib \(name "([^"]*)"\).*?\(uri "([^"]*)"\)', table.read_text()):
+            if not uri.startswith("${KIPRJMOD}/"):
+                continue
+            rel = uri[len("${KIPRJMOD}/"):]
+            # directly in hardware/, not inside a submodule or subdirectory
+            if "/" in rel or not rel.endswith(suffix):
+                continue
+            out.append((name, hardware / rel))
         return out
 
-    fps = local_entries(hardware / "fp-lib-table")
-    syms = local_entries(hardware / "sym-lib-table")
-    if len(fps) != 1:
-        sys.exit(f"expected exactly one project-local footprint library, found {len(fps)}: "
-                 f"{[n for n, _ in fps]}")
-    if len(syms) != 1:
-        sys.exit(f"expected exactly one project-local symbol library, found {len(syms)}: "
-                 f"{[n for n, _ in syms]}")
+    def pick(entries, override, what, table):
+        if override:
+            match = [e for e in entries if e[0] == override]
+            if not match:
+                sys.exit(f"no project-local {what} library named {override!r} in {table}; "
+                         f"candidates: {[n for n, _ in entries]}")
+            return match[0]
+        if not entries:
+            sys.exit(f"no project-local {what} library in {table} "
+                     f"(looking for ${{KIPRJMOD}}/<name>{'.pretty' if what == 'footprint' else '.kicad_sym'})")
+        if len(entries) > 1:
+            sys.exit(f"{len(entries)} project-local {what} libraries in {table}: "
+                     f"{[n for n, _ in entries]}; pick one with "
+                     f"--{'fp-lib' if what == 'footprint' else 'sym-lib'}")
+        return entries[0]
 
-    fp_nick, pretty = fps[0]
-    _, sym_lib = syms[0]
-    pretty = Path(pretty)
-    # the 3D directory is named after the .pretty, which is the convention
-    # every board repo already follows
+    fp_nick, pretty = pick(own_entries(hardware / "fp-lib-table", ".pretty"),
+                           fp_override, "footprint", "fp-lib-table")
+    _, sym_lib = pick(own_entries(hardware / "sym-lib-table", ".kicad_sym"),
+                      sym_override, "symbol", "sym-lib-table")
+
+    # the 3D directory is named after the .pretty, the convention every board
+    # repo already follows
     shapes = pretty.with_suffix(".3dshapes")
     if not shapes.is_dir():
-        candidates = sorted(hardware.glob("*.3dshapes"))
+        candidates = [c for c in sorted(hardware.glob("*.3dshapes"))]
         if len(candidates) != 1:
-            sys.exit(f"cannot locate the .3dshapes directory beside {pretty.name}")
+            sys.exit(f"cannot locate the .3dshapes directory beside {pretty.name}; "
+                     f"candidates: {[c.name for c in candidates]}")
         shapes = candidates[0]
-    return fp_nick, pretty, Path(sym_lib), shapes
+    return fp_nick, pretty, sym_lib, shapes
 
 
 # --- footprint repairs ------------------------------------------------------
@@ -315,6 +340,12 @@ def main():
                          "Omitted parts get an empty Description, which is what easyeda2kicad "
                          "hands over: LCSC's own description is marketing boilerplate "
                          "('Power connector / plug connector') and is not worth carrying.")
+    ap.add_argument("--fp-lib", default=None, metavar="NICKNAME",
+                    help="footprint library to import into, when the repo has more than one "
+                         "of its own")
+    ap.add_argument("--sym-lib", default=None, metavar="NICKNAME",
+                    help="symbol library to import into, when the repo has more than one "
+                         "of its own")
     ap.add_argument("--footprint-only", action="store_true", help="skip the symbol")
     ap.add_argument("--dry-run", action="store_true",
                     help="import and repair into a temp dir, change nothing")
@@ -326,7 +357,7 @@ def main():
     if not Path(KICAD_CLI).exists():
         sys.exit(f"kicad-cli not found at {KICAD_CLI}")
 
-    fp_nick, pretty, sym_lib, shapes = read_lib_tables(hardware)
+    fp_nick, pretty, sym_lib, shapes = read_lib_tables(hardware, args.fp_lib, args.sym_lib)
     print(f"target: {hardware}")
     print(f"  footprints {fp_nick} -> {pretty.name}")
     print(f"  symbols       -> {sym_lib.name}")

@@ -907,12 +907,27 @@ python3 kicad/import_part.py C30170185 --repo <hardware-dir> --dry-run
 ```
 
 `--repo` is the board's `hardware/` directory, the one holding `fp-lib-table`.
-Library naming is per repo and is read from that repo's own `sym-lib-table` and
-`fp-lib-table`, never assumed: OpenESC-20x20 is `components.kicad_sym` +
-`4in1ESC.pretty`, the hardware-template is `lib.kicad_sym` + `lib.pretty`. A
-repo with more than one project-local library is refused rather than guessed at.
 `--ref` defaults to `J`, `--pin-type` to `passive`, `--description` is repeated
 once per part in the same order as the ids.
+
+Library naming is per repo and is read from that repo's own `sym-lib-table` and
+`fp-lib-table`, never assumed. The target is the entry sitting directly in
+`hardware/` as `${KIPRJMOD}/<name>`, which resolves correctly across all seven
+board repos:
+
+| Repo | Footprints | Symbols |
+|---|---|---|
+| OpenESC-20x20 | `4in1ESC` | `components.kicad_sym` |
+| OpenESC-30x30 | `4in1ESC-30x30` | `components.kicad_sym` |
+| OpenAIO, OpenFC-Core, OpenFC-Lite, OpenFC-Lite-Mini, OpenVTX | `lib` | `lib.kicad_sym` |
+
+That rule exists to exclude the shared parts catalogue. OpenFC-Core registers it
+as `${KIPRJMOD}/KiCad-Library/footprint/OpenDrone.pretty` (a submodule) and
+OpenAIO as `${OPENDRONE_LIB}/...` under three alias nicknames. An import must
+never land there: membership in the catalogue is a deliberate promotion for
+parts already on a manufactured board, not a side effect of drawing one. If a
+repo ever has two of its own libraries the script refuses and asks for
+`--fp-lib` / `--sym-lib` rather than guessing.
 
 The trap this script exists to avoid: `kicad-cli sym upgrade` rewrites **every**
 symbol in the library, not just the new one. The board symbol libraries are
