@@ -45,7 +45,7 @@ ones an earlier run of this script produced.
 
 KiCad-lineage .wrl files are authored in 0.1 inch units; output is mm.
 """
-import argparse, collections, os, re, sys
+import argparse, collections, os, re, shutil, sys
 
 SCALE = 2.54
 POINT_BLOCK = re.compile(r"point\s*\[(.*?)\]", re.S)
@@ -598,6 +598,86 @@ def rebuildable(root, force=False):
     return out
 
 
+CATALOGUE = os.path.expanduser("~/OpenDrone/hardware/KiCad-Library/3dmodel")
+
+# How far a catalogue model may differ from the board's own before it counts
+# as a different part. The largest genuine match measured across the repos is
+# 0.062 mm (the boot button's dome), the smallest genuine mismatch is 0.558 mm
+# (two different USB-C connectors sharing one name), so anywhere in between
+# separates them and 0.1 mm sits at the safe end.
+CATALOGUE_TOL_MM = 0.1
+
+
+def prefer_catalogue(root, catalogue=CATALOGUE, tol=CATALOGUE_TOL_MM, apply=False):
+    """Swap a mesh-rebuilt .step for the catalogue's real B-rep of the same part.
+
+    A model this script wrote is a triangle soup: a few hundred flat facets
+    where the vendor's own file has a dozen cylinders, and often an open shell
+    where the mesh did not close. An open shell is not a solid, so an importer
+    has no part to colour and paints it from its own palette instead: that is
+    every colour complaint we have had, one for one -- the boot button, the two
+    0900 filters, the TLV7031 in its X2SON-4, the USB-C shell.
+
+    KiCad-Library already holds the vendor B-rep for most of them. Where the
+    two agree on size they are the same part and the catalogue copy is simply
+    better, so it replaces the local one. Where they do not, they are NOT the
+    same part and nothing is touched: OpenFC-Lite's USB-C is 11.90 x 8.05 and
+    the catalogue's is 11.34 x 7.60, two different connectors under one name.
+    Size is the test because it is the one property a wrong part cannot fake.
+    """
+    from OCP.STEPControl import STEPControl_Reader
+    from OCP.Bnd import Bnd_Box
+    from OCP.BRepBndLib import BRepBndLib
+
+    def dims(path):
+        r = STEPControl_Reader()
+        r.ReadFile(path)
+        r.TransferRoots()
+        box = Bnd_Box()
+        BRepBndLib.Add_s(r.OneShape(), box)
+        x0, y0, z0, x1, y1, z1 = box.Get()
+        return (x1 - x0, y1 - y0, z1 - z0)
+
+    have = {}
+    for name in sorted(os.listdir(catalogue)) if os.path.isdir(catalogue) else []:
+        if name.endswith(".step"):
+            have[name] = os.path.join(catalogue, name)
+
+    swapped = kept = 0
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames
+                       if d not in ('.git', 'export', 'node_modules', '__pycache__')
+                       and 'backup' not in d.lower() and 'archive' not in d.lower()
+                       and not d.startswith('.')]
+        if os.path.abspath(dirpath) == os.path.abspath(catalogue):
+            continue
+        for name in sorted(filenames):
+            if name not in have:
+                continue
+            step = os.path.join(dirpath, name)
+            with open(step, errors='replace') as fh:
+                if OUR_HEADER not in fh.read(400):
+                    continue
+            try:
+                mine, theirs = dims(step), dims(have[name])
+            except Exception as exc:
+                print(f"  ?  {os.path.relpath(step, root)}: {exc}")
+                continue
+            far = max(abs(mine[i] - theirs[i]) for i in range(3))
+            if far > tol:
+                kept += 1
+                print(f"  keep {os.path.relpath(step, root)}: catalogue is a "
+                      f"different part, {far:.3f} mm apart")
+                continue
+            swapped += 1
+            print(f"  swap {os.path.relpath(step, root)} ({far:.3f} mm)")
+            if apply:
+                shutil.copyfile(have[name], step)
+    print(f"{swapped} model(s) {'replaced by' if apply else 'would take'} the "
+          f"catalogue B-rep, {kept} left alone as a different part")
+    return 0
+
+
 def missing_step(root):
     """Every .wrl under root with no .step beside it.
 
@@ -682,7 +762,15 @@ def main():
                     help="with --rebuild: redo the coloured ones too")
     ap.add_argument("--fill-missing", metavar="ROOT",
                     help="write a .step beside every .wrl that has none")
+    ap.add_argument("--prefer-catalogue", metavar="ROOT",
+                    help="replace mesh-rebuilt models with the KiCad-Library "
+                         "B-rep of the same part, where the two agree on size")
+    ap.add_argument("--apply", action="store_true",
+                    help="with --prefer-catalogue: write, instead of listing")
     a = ap.parse_args()
+    if a.prefer_catalogue:
+        return prefer_catalogue(os.path.expanduser(a.prefer_catalogue),
+                                apply=a.apply)
     if a.fill_missing:
         return fill_missing(os.path.expanduser(a.fill_missing),
                             merge=not a.no_unify)

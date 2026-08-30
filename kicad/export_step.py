@@ -133,6 +133,16 @@ PRESETS = {
 STRIP_FP_SILK = True
 GOLD_PADS = True
 
+# Hand the finished export to step_post.py, which has OCC. Silkscreen comes out
+# of kicad-cli as zero-thickness faces and lands in Onshape with every closed
+# letter filled in; step_post gives each glyph thickness so there is nothing
+# left to misread. STRIP_MARKINGS additionally defeatures the "LCEDA EasyEDA"
+# wordmark off the LCSC package models: LCSC embosses it on the lid of every
+# generic package it generates, and at any zoom a person actually uses it is
+# the loudest thing on the board.
+STEP_POST = True
+STRIP_MARKINGS = True
+
 # ENIG gold, the same value export-boards.mjs paints the web GLB pads, so the
 # STEP and the GLB agree. kicad-cli writes exposed copper as a neutral 0.735
 # grey, which reads as bare tin next to the green mask.
@@ -303,6 +313,272 @@ def human(n):
     return f"{n / 1048576:.1f} MB" if n >= 1048576 else f"{n / 1024:.0f} kB"
 
 
+def edge_pieces(board, pcbnew):
+    """Edge.Cuts broken into cuttable pieces, each tagged with its owning item.
+
+    A piece is a dict: kind "seg" with a and b, or kind "arc" with centre c,
+    radius r, endpoints a and b, and the signed sweep in radians. Beziers and
+    full circles are listed as owners with no pieces; a castellation that lands
+    on one is what makes the notcher give up.
+    """
+    items = [d for d in board.GetDrawings() if d.GetLayer() == pcbnew.Edge_Cuts]
+    for fp in board.GetFootprints():
+        items += [g for g in fp.GraphicalItems() if g.GetLayer() == pcbnew.Edge_Cuts]
+
+    def pt(p):
+        return (float(p.x), float(p.y))
+
+    pieces = []
+    for n, it in enumerate(items):
+        shape = it.GetShape()
+        if shape == pcbnew.SHAPE_T_SEGMENT:
+            pieces.append({"owner": n, "kind": "seg",
+                           "a": pt(it.GetStart()), "b": pt(it.GetEnd())})
+        elif shape == pcbnew.SHAPE_T_RECT:
+            a, b = pt(it.GetStart()), pt(it.GetEnd())
+            corner = [a, (b[0], a[1]), b, (a[0], b[1])]
+            for k in range(4):
+                pieces.append({"owner": n, "kind": "seg",
+                               "a": corner[k], "b": corner[(k + 1) % 4]})
+        elif shape == pcbnew.SHAPE_T_ARC:
+            c, a, b = pt(it.GetCenter()), pt(it.GetStart()), pt(it.GetEnd())
+            r = math.hypot(a[0] - c[0], a[1] - c[1])
+            if r <= 0:
+                continue
+            sweep = math.radians(it.GetArcAngle().AsDegrees())
+            pieces.append({"owner": n, "kind": "arc", "c": c, "r": r,
+                           "a": a, "b": b, "sweep": sweep})
+        elif shape == pcbnew.SHAPE_T_POLY:
+            poly = it.GetPolyShape()
+            for i in range(poly.OutlineCount()):
+                chain = poly.Outline(i)
+                if chain.ArcCount():
+                    continue
+                for k in range(chain.PointCount()):
+                    pieces.append({"owner": n, "kind": "seg",
+                                   "a": pt(chain.CPoint(k)),
+                                   "b": pt(chain.CPoint((k + 1) % chain.PointCount()))})
+    return items, pieces
+
+
+def line_circle(a, b, cx, cy, r):
+    """Where a circle crosses the segment A-B, as parameters along it."""
+    dx, dy = b[0] - a[0], b[1] - a[1]
+    fx, fy = a[0] - cx, a[1] - cy
+    qa = dx * dx + dy * dy
+    if qa == 0:
+        return []
+    qb = 2 * (fx * dx + fy * dy)
+    qc = fx * fx + fy * fy - r * r
+    disc = qb * qb - 4 * qa * qc
+    if disc <= 0:
+        return []
+    s = math.sqrt(disc)
+    return [t for t in sorted(((-qb - s) / (2 * qa), (-qb + s) / (2 * qa)))
+            if 1e-9 < t < 1 - 1e-9]
+
+
+def circle_circle(c1, r1, c2, r2):
+    """The two points where two circles cross, or []."""
+    dx, dy = c2[0] - c1[0], c2[1] - c1[1]
+    d = math.hypot(dx, dy)
+    if d == 0 or d >= r1 + r2 or d <= abs(r1 - r2):
+        return []
+    a = (r1 * r1 - r2 * r2 + d * d) / (2 * d)
+    h2 = r1 * r1 - a * a
+    if h2 <= 0:
+        return []
+    h = math.sqrt(h2)
+    mx, my = c1[0] + a * dx / d, c1[1] + a * dy / d
+    return [(mx + h * dy / d, my - h * dx / d),
+            (mx - h * dy / d, my + h * dx / d)]
+
+
+def arc_fraction(piece, p):
+    """How far along an arc piece a point on its circle sits, 0 to 1, or None."""
+    c, sweep = piece["c"], piece["sweep"]
+    if sweep == 0:
+        return None
+    start = math.atan2(piece["a"][1] - c[1], piece["a"][0] - c[0])
+    here = math.atan2(p[1] - c[1], p[0] - c[0])
+    delta = here - start
+    # Bring the offset onto the same turn as the sweep, then normalise.
+    while delta * (1 if sweep > 0 else -1) < 0:
+        delta += 2 * math.pi * (1 if sweep > 0 else -1)
+    f = delta / sweep
+    return f if 1e-9 < f < 1 - 1e-9 else None
+
+
+def arc_point(piece, f):
+    """The point a fraction of the way along an arc piece."""
+    c = piece["c"]
+    start = math.atan2(piece["a"][1] - c[1], piece["a"][0] - c[0])
+    ang = start + piece["sweep"] * f
+    return (c[0] + piece["r"] * math.cos(ang), c[1] + piece["r"] * math.sin(ang))
+
+
+def piece_point(piece, f):
+    if piece["kind"] == "seg":
+        a, b = piece["a"], piece["b"]
+        return (a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f)
+    return arc_point(piece, f)
+
+
+def crossings(piece, cx, cy, r):
+    """Where a drill circle crosses a piece, as (fraction, point) pairs."""
+    if piece["kind"] == "seg":
+        out = []
+        for t in line_circle(piece["a"], piece["b"], cx, cy, r):
+            out.append((t, piece_point(piece, t)))
+        return out
+    out = []
+    for p in circle_circle(piece["c"], piece["r"], (cx, cy), r):
+        f = arc_fraction(piece, p)
+        if f is not None:
+            out.append((f, p))
+    return sorted(out)
+
+
+def notch_edge_cuts(board, straddling, inside, pcbnew):
+    """Cut every castellation into Edge.Cuts as a real arc. True if it worked.
+
+    The obvious way to notch an outline is to subtract the drills from the
+    board polygon and redraw Edge.Cuts from the result. That is what this used
+    to do, and it is why the exports came back faceted: SHAPE_POLY_SET has no
+    arcs, so redrawing the outline from it flattened every rounded corner and
+    every notch into a fan of short segments. The four RX variants came out
+    with 158 planar side faces and 8 cylinders where the board has 10 and 12.
+
+    So the notch is cut into the edge graphics themselves: find the piece of
+    Edge.Cuts the drill crosses, split it at the two crossings, and put the
+    drill's own arc between them, bulging into the board. Everything the drill
+    does not touch is left exactly as the designer drew it.
+
+    Gives up, and says so, on anything it cannot do exactly: a castellation
+    over a corner, over a bezier, or over two pieces at once. The caller then
+    falls back to the polygon, which is faceted but never wrong.
+    """
+    items, pieces = edge_pieces(board, pcbnew)
+    if not pieces:
+        return False
+
+    cuts = {}
+    for _, _, cx, cy, r in straddling:
+        found = None
+        for i, piece in enumerate(pieces):
+            hits = crossings(piece, cx, cy, r)
+            if not hits:
+                continue
+            if len(hits) != 2 or found is not None:
+                return False
+            found = (i, hits)
+        if found is None:
+            return False
+        i, ((f0, p0), (f1, p1)) = found
+        # The notch follows the drill, so its middle is on the drill circle,
+        # on whichever side of the chord is still board.
+        ux, uy = (p0[0] + p1[0]) / 2 - cx, (p0[1] + p1[1]) / 2 - cy
+        if math.hypot(ux, uy) < 1e-6:
+            ux, uy = -(p1[1] - p0[1]), p1[0] - p0[0]
+        norm = math.hypot(ux, uy)
+        mid = None
+        for sign in (1, -1):
+            m = (cx + sign * r * ux / norm, cy + sign * r * uy / norm)
+            if inside(m[0], m[1]):
+                mid = m
+                break
+        if mid is None:
+            return False
+        cuts.setdefault(i, []).append((f0, p0, f1, p1, mid))
+
+    owners = {pieces[i]["owner"] for i in cuts}
+    by_owner = {}
+    for i, piece in enumerate(pieces):
+        by_owner.setdefault(piece["owner"], []).append(i)
+
+    def vec(p):
+        return pcbnew.VECTOR2I(int(round(p[0])), int(round(p[1])))
+
+    def add_segment(p, q):
+        s = pcbnew.PCB_SHAPE(board)
+        s.SetShape(pcbnew.SHAPE_T_SEGMENT)
+        s.SetLayer(pcbnew.Edge_Cuts)
+        s.SetWidth(pcbnew.FromMM(0.05))
+        s.SetStart(vec(p))
+        s.SetEnd(vec(q))
+        board.Add(s)
+
+    def add_arc(p, m, q):
+        s = pcbnew.PCB_SHAPE(board)
+        s.SetShape(pcbnew.SHAPE_T_ARC)
+        s.SetLayer(pcbnew.Edge_Cuts)
+        s.SetWidth(pcbnew.FromMM(0.05))
+        s.SetArcGeometry(vec(p), vec(m), vec(q))
+        board.Add(s)
+
+    def emit(piece, f0, f1):
+        """Re-draw the part of a piece between two fractions of itself."""
+        if f1 - f0 < 1e-9:
+            return
+        p, q = piece_point(piece, f0), piece_point(piece, f1)
+        if piece["kind"] == "seg":
+            add_segment(p, q)
+        else:
+            add_arc(p, piece_point(piece, (f0 + f1) / 2), q)
+
+    # The owning item is MOVED to Cmts.User, not removed. board.Remove() hands
+    # ownership to Python without taking it, which corrupts the SWIG proxies:
+    # every later GetFootprints() then yields raw SwigPyObject and the next
+    # attribute access dies with "'SwigPyObject' object is not iterable". That
+    # crashed the two boards with the most edge graphics, OpenESC-30x30 4in1
+    # (141 items) and OpenRX-all (54), and took the rest of the --all batch down
+    # with them. Cmts.User is in no export preset, so the moved item is inert.
+    for owner in owners:
+        items[owner].SetLayer(pcbnew.Cmts_User)
+        for i in by_owner[owner]:
+            piece = pieces[i]
+            here = sorted(cuts.get(i, []), key=lambda c: c[0])
+            walked = 0.0
+            for f0, p0, f1, p1, mid in here:
+                emit(piece, walked, f0)
+                add_arc(p0, mid, p1)
+                walked = max(walked, f1)
+            emit(piece, walked, 1.0)
+
+    check = pcbnew.SHAPE_POLY_SET()
+    if not board.GetBoardPolygonOutlines(check, False) or check.OutlineCount() == 0:
+        return False
+    return True
+
+
+def rewrite_edge_cuts_as_polygon(board, outline, pcbnew):
+    """Redraw Edge.Cuts from the notched polygon. Correct, and faceted.
+
+    Only used when notch_edge_cuts cannot cut a castellation exactly. See its
+    docstring for why this is the fallback and not the method.
+    """
+    for d in list(board.GetDrawings()):
+        if d.GetLayer() == pcbnew.Edge_Cuts:
+            d.SetLayer(pcbnew.Cmts_User)
+    for fp in board.GetFootprints():
+        for g in list(fp.GraphicalItems()):
+            if g.GetLayer() == pcbnew.Edge_Cuts:
+                g.SetLayer(pcbnew.Cmts_User)
+    for i in range(outline.OutlineCount()):
+        contours = [outline.Outline(i)]
+        contours += [outline.Hole(i, h) for h in range(outline.HoleCount(i))]
+        for contour in contours:
+            one = pcbnew.SHAPE_POLY_SET()
+            one.AddOutline(contour)
+            shape = pcbnew.PCB_SHAPE(board)
+            shape.SetShape(pcbnew.SHAPE_T_POLY)
+            shape.SetLayer(pcbnew.Edge_Cuts)
+            shape.SetPolyShape(one)
+            shape.SetFilled(False)
+            shape.SetWidth(pcbnew.FromMM(0.05))
+            board.Add(shape)
+
+
 def clip_board_to_outline(board_path, scratch):
     """Copy the board and remove copper that falls outside Edge.Cuts.
 
@@ -318,7 +594,7 @@ def clip_board_to_outline(board_path, scratch):
     try:
         import pcbnew
     except ImportError:
-        return board_path, None, None, None, None
+        return board_path, None, None, None, None, None, 0
 
     stem = os.path.splitext(os.path.basename(board_path))[0]
     srcdir = os.path.dirname(os.path.abspath(board_path))
@@ -339,14 +615,19 @@ def clip_board_to_outline(board_path, scratch):
     if not board.GetBoardPolygonOutlines(outline, False) or outline.OutlineCount() == 0:
         # No closed Edge.Cuts to clip against. That is a board defect, not an
         # export problem, and it must not be reported as "pcbnew missing".
-        return board_path, "no-outline", None, None, None, 0
+        return board_path, "no-outline", None, None, None, 0, 0
 
     L = pcbnew.UNDEFINED_LAYER  # padstack "all layers"
-    clipped = deleted = notched = 0
+    clipped = deleted = notched = unnotched = 0
 
     def outside_area(poly, region):
         t = pcbnew.SHAPE_POLY_SET(poly)
         t.BooleanSubtract(region)
+        return sum(abs(t.Outline(i).Area()) for i in range(t.OutlineCount())) / 1e12
+
+    def inside_area(poly, region):
+        t = pcbnew.SHAPE_POLY_SET(poly)
+        t.BooleanIntersection(region)
         return sum(abs(t.Outline(i).Area()) for i in range(t.OutlineCount())) / 1e12
 
     def circle(cx, cy, dx, dy, segs=48):
@@ -372,52 +653,50 @@ def clip_board_to_outline(board_path, scratch):
                 continue
             pos = pad.GetPosition()
             hole = circle(pos.x, pos.y, dx, dy)
-            if outside_area(hole, outline) > MIN_OUTSIDE_MM2:
-                straddling.append((pad, hole))
+            # STRADDLING means a real share of the hole on each side of the
+            # edge. Testing only the part outside also catches every drill that
+            # misses the board entirely, so a board with an off-board footprint
+            # anywhere on the sheet looked like it had castellations:
+            # OpenRX-Lite has none and reported 27. Testing a bare area on both
+            # sides is not enough either, because a hole that merely sits in a
+            # rounded corner leaves a sliver over the line: the 30x30 ESC
+            # reported two of those. A castellation is cut in half by the
+            # router, so nothing near half is ever thrown away by asking for a
+            # tenth. Both went through the polygon rewrite and cost those
+            # boards every arc they had.
+            out, cut = outside_area(hole, outline), inside_area(hole, outline)
+            if (out > MIN_OUTSIDE_MM2 and cut > MIN_OUTSIDE_MM2
+                    and min(out, cut) > 0.1 * (out + cut)):
+                straddling.append((pad, hole, pos.x, pos.y, max(dx, dy) / 2))
 
     if straddling:
-        for _, hole in straddling:
-            outline.BooleanSubtract(hole)
-        for pad, _ in straddling:
-            # Zero the drill only. Setting PAD_ATTRIB_SMD here also collapses the
-            # pad's layer set to a single copper layer, and pass 2 then rebuilds
-            # only that side, silently losing all the back-side castellation
-            # copper. The drill size alone is what suppresses the barrel.
-            pad.SetDrillSize(pcbnew.VECTOR2I(0, 0))
-            notched += 1
+        # Keep the un-notched outline: it is what says which side of an edge is
+        # board, which is how the notch arc knows which way to bulge.
+        solid = pcbnew.SHAPE_POLY_SET(outline)
 
-        # Rewrite Edge.Cuts to the notched outline. The old edge graphics, both
-        # board-level and inside footprints, have to stop defining the outline or
-        # the original straight edge survives alongside the notched one.
-        #
-        # They are MOVED to Cmts.User, not removed. board.Remove() hands
-        # ownership to Python without taking it, which corrupts the SWIG proxies:
-        # every later GetFootprints() then yields raw SwigPyObject and the next
-        # attribute access dies with "'SwigPyObject' object is not iterable".
-        # That crashed the two boards with the most edge graphics, OpenESC-30x30
-        # 4in1 (141 items) and OpenRX-all (54), and took the rest of the --all
-        # batch down with them. Cmts.User is not in any export preset, so the
-        # moved graphics are inert.
-        for d in list(board.GetDrawings()):
-            if d.GetLayer() == pcbnew.Edge_Cuts:
-                d.SetLayer(pcbnew.Cmts_User)
-        for fp in board.GetFootprints():
-            for g in list(fp.GraphicalItems()):
-                if g.GetLayer() == pcbnew.Edge_Cuts:
-                    g.SetLayer(pcbnew.Cmts_User)
-        for i in range(outline.OutlineCount()):
-            contours = [outline.Outline(i)]
-            contours += [outline.Hole(i, h) for h in range(outline.HoleCount(i))]
-            for contour in contours:
-                one = pcbnew.SHAPE_POLY_SET()
-                one.AddOutline(contour)
-                shape = pcbnew.PCB_SHAPE(board)
-                shape.SetShape(pcbnew.SHAPE_T_POLY)
-                shape.SetLayer(pcbnew.Edge_Cuts)
-                shape.SetPolyShape(one)
-                shape.SetFilled(False)
-                shape.SetWidth(pcbnew.FromMM(0.05))
-                board.Add(shape)
+        def inside(x, y):
+            return outside_area(circle(x, y, 2000, 2000), solid) <= 0
+
+        for _, hole, _, _, _ in straddling:
+            outline.BooleanSubtract(hole)
+
+        if notch_edge_cuts(board, straddling, inside, pcbnew):
+            for pad, _, _, _, _ in straddling:
+                # Zero the drill only. Setting PAD_ATTRIB_SMD here also collapses
+                # the pad's layer set to a single copper layer, and pass 2 then
+                # rebuilds only that side, silently losing all the back-side
+                # castellation copper. The drill size alone suppresses the barrel.
+                pad.SetDrillSize(pcbnew.VECTOR2I(0, 0))
+                notched += 1
+        else:
+            # The notch could not be cut exactly: it lands on a bezier, on a
+            # corner, or on two edges at once. Leave the drill alone and let
+            # kicad-cli cut it as an ordinary hole. That is wrong in the two
+            # square millimetres around the castellation; redrawing the whole
+            # outline from the polygon instead, which is what this used to do,
+            # is wrong over the entire edge -- the 30x30 ESC came out with 759
+            # planar side faces and 4 cylinders in place of 123 and 74.
+            unnotched = len(straddling)
 
     # PASS 2 - copper. Anything past the (now notched) outline is cut away.
     CU = (pcbnew.F_Cu, pcbnew.In1_Cu, pcbnew.B_Cu)
@@ -502,7 +781,7 @@ def clip_board_to_outline(board_path, scratch):
     # the UNCLIPPED board while printing clipped-pad counts.
     if not board.Save(tmp):
         sys.exit(f"pcbnew could not write {tmp}")
-    return tmp, clipped, deleted, notched, exposed, silk
+    return tmp, clipped, deleted, notched, exposed, silk, unnotched
 
 
 def add_mask_exposed_copper(board, outline, pcbnew):
@@ -723,9 +1002,6 @@ def post_process(step_path, temp_stem, product):
     text, n_named = expand_predefined_colours(text)
     if n_named:
         print(f"  colours    {n_named} named colour(s) written out as RGB")
-    text, n_outer = mark_outer_bounds(text)
-    if n_outer:
-        print(f"  faces      {n_outer} outer loop(s) named, so holes stay holes")
     if GOLD_PADS:
         text = recolour_pads_gold(text)
     # kicad-cli stamps the export time into FILE_NAME, so two exports of an
@@ -739,6 +1015,71 @@ def post_process(step_path, temp_stem, product):
         text = text.replace(temp_stem, product)
     with open(step_path, "w", encoding="utf8", errors="surrogateescape") as fh:
         fh.write(text)
+
+    run_step_post(step_path)
+
+    # Second text pass, after the OCC rewrite. Its writer re-emits pure black,
+    # white and yellow as named colours, and names no outer loop at all, so both
+    # have to be redone on what it wrote rather than on what kicad-cli wrote.
+    with open(step_path, encoding="utf8", errors="surrogateescape") as fh:
+        text = fh.read()
+    text, n_named = expand_predefined_colours(text)
+    text, n_outer = mark_outer_bounds(text)
+    if n_outer:
+        print(f"  faces      {n_outer} outer loop(s) named, so holes stay holes"
+              + (f"; {n_named} named colour(s) written out as RGB" if n_named else ""))
+    with open(step_path, "w", encoding="utf8", errors="surrogateescape") as fh:
+        fh.write(text)
+
+
+def occ_python():
+    """An interpreter that has OCC. KiCad's bundled one does not.
+
+    Cached on the function, and looked for rather than configured: OCP arrives
+    with cadquery-ocp under whatever Python the machine installed it into, and
+    hard-coding that path is how this breaks on the next machine.
+    """
+    if hasattr(occ_python, "found"):
+        return occ_python.found
+    occ_python.found = None
+    seen = set()
+    for exe in ("python3", "/opt/homebrew/bin/python3", "/usr/local/bin/python3",
+                "/Library/Frameworks/Python.framework/Versions/Current/bin/python3",
+                sys.executable):
+        path = shutil.which(exe) or exe
+        if path in seen or not os.path.exists(path):
+            continue
+        seen.add(path)
+        try:
+            r = subprocess.run([path, "-c", "import OCP"], capture_output=True)
+        except OSError:
+            continue
+        if r.returncode == 0:
+            occ_python.found = path
+            break
+    return occ_python.found
+
+
+def run_step_post(step_path):
+    """Hand the export to step_post.py for the passes that need OCC."""
+    if not STEP_POST:
+        return
+    exe = occ_python()
+    script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "step_post.py")
+    if not exe or not os.path.exists(script):
+        print("  post       skipped, no interpreter with OCC found")
+        return
+    cmd = [exe, script, step_path]
+    if STRIP_MARKINGS:
+        cmd.append("--markings")
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    if r.returncode != 0:
+        print("  post       FAILED, silkscreen left flat:")
+        print("             " + (r.stderr.strip().splitlines() or ["?"])[-1])
+        return
+    for line in r.stdout.strip().splitlines():
+        if line.strip().startswith("post:"):
+            print("  " + line.strip())
 
 
 def export(cli, board, out, preset, extra, dry_run, clip):
@@ -755,18 +1096,21 @@ def export(cli, board, out, preset, extra, dry_run, clip):
     temp_stem = ""
     try:
         if clip:
-            src, nclip, ndel, nhole, nmask, nsilk = clip_board_to_outline(board, scratch)
+            (src, nclip, ndel, nhole, nmask, nsilk,
+             nkept) = clip_board_to_outline(board, scratch)
             if scratch:
                 temp_stem = os.path.basename(scratch[0])
             if nclip == "no-outline":
                 note = "  WARNING: board has no closed Edge.Cuts outline, nothing clipped"
             elif nclip is None:
                 note = "  (clip skipped: pcbnew unavailable — run with KiCad's Python)"
-            elif nclip or ndel or nhole or nmask:
+            elif nclip or ndel or nhole or nmask or nkept:
                 note = (f"  (clipped {nclip} pad(s), removed {ndel} outside, "
                         f"notched {nhole} castellation(s), "
                         f"{nmask} mask-exposed copper shape(s)"
-                        + (f", stripped {nsilk} footprint silk" if nsilk else "") + ")")
+                        + (f", stripped {nsilk} footprint silk" if nsilk else "")
+                        + (f", {nkept} castellation(s) LEFT AS HOLES, edge too "
+                           f"complex to notch exactly" if nkept else "") + ")")
             cmd[-1] = src
         result = subprocess.run(cmd, capture_output=True, text=True)
     finally:

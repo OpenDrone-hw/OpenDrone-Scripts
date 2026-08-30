@@ -405,7 +405,32 @@ python3 kicad/wrl_to_step.py model.wrl -o model.step
 python3 kicad/wrl_to_step.py --rebuild ~/OpenDrone/hardware      # all of ours
 python3 kicad/wrl_to_step.py --rebuild ~/OpenDrone/hardware --force
 python3 kicad/wrl_to_step.py --fill-missing ~/OpenDrone/hardware
+python3 kicad/wrl_to_step.py --prefer-catalogue ~/OpenDrone/hardware [--apply]
 ```
+
+**`--prefer-catalogue` undoes a rebuild that never needed doing.** A model
+this script writes is a triangle soup, and where the mesh does not close it is
+an open shell rather than a solid. An open shell is not a part, so an importer
+has no part to colour and paints it from its own palette: that is every colour
+complaint the Onshape import produced, one for one, and the list of open-shell
+products read like the complaint list itself. The boot switch
+(`SW-SMD_4P-L3.0-W2.0-P0.85-LS3.5`, four repos), the two 0900 filters on Gemini
+and Mono (`FILTER-SMD_10P-L2.0-W1.6-BL`), the TLV7031 in its X2SON-4, the USB-C
+shell on OpenAIO, the microSD cage, the AP1606 in its DFN-3L.
+
+`KiCad-Library/3dmodel` already held the vendor B-rep of most of them. The pass
+replaces a local mesh with the catalogue copy **only where the two agree on
+bounding box within 0.1 mm**, because size is the one property a wrong part
+cannot fake: 38 models took the catalogue B-rep and 2 did not, OpenFC-Lite and
+Mini's `USB-TYPE-C-SMD_TYPE-C-16P-QTWT`, which is 11.90 x 8.05 against the
+catalogue's 11.34 x 7.60 and is simply a different connector under the same
+name. Run `check_models --all` after: E6 stayed at 0, so no board took a part
+of the wrong shape. It also took 24% off the exported set, 166 MB to 133 MB,
+because the meshes were most of the file.
+
+Run it before `--rebuild`, not after: rebuild only touches files with no
+colour, so a swapped-in vendor B-rep is safe from it either way, but there is
+no point rebuilding a model that is about to be thrown away.
 
 **`--fill-missing` writes a .step beside every .wrl that has none**, and that
 is not cosmetic. `--subst-models` swaps a same-named .step in for each .wrl
@@ -465,14 +490,16 @@ $KPY kicad/export_step.py --all --products          # the publishable set
 $KPY kicad/export_step.py <board.kicad_pcb> -o out.step
 ```
 
-Six things the export does that are not obvious, all at export time on a temp
+Eight things the export does that are not obvious, all at export time on a temp
 copy, with the source board never written:
 
 - **Named colours are written out as numbers.** STEP allows
   `DRAUGHTING_PRE_DEFINED_COLOUR('black')` and KiCad's own library models use
   it for every black IC body. An importer that does not read a named colour
-  draws the part untinted, which is what the OpenESC MOSFETs looked like. Each one becomes the `COLOUR_RGB` that ISO 10303-46 defines it as,
-  same entity id, so every STYLED_ITEM pointing at it still resolves.
+  draws the part untinted. Each one becomes the `COLOUR_RGB` that ISO 10303-46
+  defines it as, same entity id, so every STYLED_ITEM pointing at it still
+  resolves. Runs twice: once on what kicad-cli wrote, once after the OCC pass,
+  whose writer re-emits pure black, white and yellow as named colours again.
 - **The outer loop of a face with holes is named.** kicad-cli writes the outer
   boundary and the holes both as `FACE_BOUND` and never `FACE_OUTER_BOUND`,
   which is legal but leaves the importer to work it out. An importer that
@@ -480,7 +507,25 @@ copy, with the source board never written:
   stroke-font glyph with a closed counter looked like coming back from
   Onshape. The largest loop on each multi-bound face is
   renamed `FACE_OUTER_BOUND`; a hole is inside its own face, so it can never be
-  the largest. 46 to 194 faces per board.
+  the largest. 74 to 266 faces per board. Runs AFTER the OCC pass, because OCC's
+  own writer names no outer bound at all.
+- **A castellation is cut into Edge.Cuts as a real arc**, by splitting the piece
+  of the outline the drill crosses and putting the drill's own arc between the
+  two crossings, bulging inward. The old way, subtracting the drills from the
+  board polygon and redrawing Edge.Cuts from the result, is why the exports came
+  back faceted: `SHAPE_POLY_SET` has no arcs, so redrawing flattened every
+  rounded corner into a fan of segments. Two separate bugs fed it. A drill that
+  missed the board entirely counted as straddling, so OpenRX-Lite reported 27
+  castellations and has none; and a drill merely sitting in a rounded corner
+  left a sliver over the line, so the 30x30 ESC reported two. A castellation is
+  cut in half by the router, so the test now asks for a tenth of the hole on
+  each side. Board bodies, before and after: OpenRX 166 faces and 8 cylinders ->
+  22 and 12, OpenAIO 280 and 10 -> 54 and 36, the 30x30 ESC 763 and 4 -> 197 and
+  74. Where a notch cannot be cut exactly (the 30x30's two, which land on a
+  bezier) the drill is LEFT ALONE and kicad-cli cuts it as an ordinary hole: two
+  square millimetres wrong beats the whole outline faceted, and the run says so.
+- **The finished file goes through `step_post.py`** for the passes that need a
+  CAD kernel. See its own section below.
 
 - **`--fill-all-vias` is always on.** A via-in-pad array otherwise punches a
   grid of circles through every pad, which is what the Onshape import kept
@@ -515,7 +560,7 @@ repo's `export/`, which is the folder you drag into Onshape:
 $KPY kicad/export_step.py --all --products --preset standard --outdir ~/OpenDrone/_onshape
 ```
 
-10 boards, 152 MB. `--preset outline` (`--board-only`) gives the same set at
+10 boards, 133 MB. `--preset outline` (`--board-only`) gives the same set at
 2.9 MB, one solid and one product per board, if placement is all you need.
 
 Onshape takes `.stp`/`.step` only: **`.stpz` is not supported**, and neither is
@@ -607,6 +652,53 @@ Clipping happens on a temp copy beside the source board (not in `/tmp`, or
 stay open. An unresolved 3D model is only a warning to kicad-cli, which still
 exits 0, so the script reports missing models explicitly rather than shipping a
 half-empty board.
+
+## `kicad/step_post.py`: the passes that need a CAD kernel
+
+`export_step.py` runs under KiCad's Python, which has pcbnew and no OCC. Two
+things about a kicad-cli export cannot be fixed by editing STEP text, so it
+shells out to this once per board, under the system interpreter. It finds that
+interpreter by trying `import OCP` in each candidate rather than hard-coding a
+path, and if none has OCC it says so and leaves the file alone.
+
+```bash
+python3 kicad/step_post.py board.step                 # silkscreen + shells
+python3 kicad/step_post.py board.step --markings      # also strip wordmarks
+python3 kicad/step_post.py board.step --no-silk --no-close
+```
+
+Three passes, each verified before it commits:
+
+- **Silkscreen becomes solid.** kicad-cli exports it as, in its own words, "a
+  set of flat faces": one zero-thickness `SHELL_BASED_SURFACE_MODEL` per glyph.
+  A letter with a closed counter is one face with an inner bound, and Onshape
+  fills it, so BOOT arrives as four blobs. Each glyph is extruded 0.02 mm and
+  there is nothing left to misread. Direction comes from where the face sits
+  relative to the middle of the board, not from its normal: kicad-cli orients
+  both sides the same way, so following the normal buries the bottom legend in
+  the substrate. Re-running is a no-op, since a label that already holds solids
+  is skipped, or the thickness would double every pass.
+- **Open shells are sewn shut.** Belt and braces behind
+  `wrl_to_step --prefer-catalogue`: any surface body left over is sewn at 1e-4,
+  1e-3 then 1e-2 mm and made a solid, and is kept only if the result is valid
+  and has positive volume. A shell that stays open is left as it is, because a
+  sheet with a hole in it is not a solid.
+- **Vendor wordmarks are defeatured off package bodies** (`--markings`, on by
+  default from `export_step.py`). LCSC embosses "LCEDA EasyEDA", a cloud logo
+  and a pin-1 dot on the lid of every generic package it generates, fused into
+  the body solid, a few microns proud. `BRepAlgoAPI_Defeaturing` removes the
+  faces and the lid closes over them: the TLV7031's X2SON-4 goes from 291 faces
+  to 66, the RP2354's QFN-80 from 806 to 581.
+
+A marking face is found by measure: in the 0.05 mm slab above the plane that
+carries the most face area on that solid, and no more than 5% of that plane's
+area. **Height alone is not enough** -- an earlier version took four faces off
+every 0201 on the board, because the metal end cap also sits proud of the body
+top. It covers a third of the lid, so area is what tells a marking from a part
+of the part. A body is only touched if at least 12 such faces are found, the
+result is a valid solid, and the volume moved by less than the emboss could
+account for. Anything else is refused and reported, which is what happens to
+the RX 0900 filters.
 
 ## `kicad/model_audit.py` + `kicad/apply_models.py`: 3D model diet
 
