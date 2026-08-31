@@ -33,7 +33,7 @@ eye in CAD.
 import json, math, os, re, sys, glob, argparse, collections
 import pcbnew
 
-HW = os.path.expanduser('~/OpenDrone/hardware')
+HW = os.path.expanduser('~/Incutec/OpenDrone/hardware')
 KICAD_3D = ('/Applications/KiCad/KiCad.app/Contents/SharedSupport/3dmodels')
 
 def swap_models(container, mapping, stats, where):

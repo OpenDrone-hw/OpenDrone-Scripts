@@ -35,8 +35,8 @@ Usage:
     python3 wrl_to_step.py model.wrl [-o model.step]
     python3 wrl_to_step.py --check model.wrl     # parse and report only
     python3 wrl_to_step.py model.wrl --no-unify  # keep every facet a face
-    python3 wrl_to_step.py --rebuild ~/OpenDrone/hardware   # every one of ours
-    python3 wrl_to_step.py --fill-missing ~/OpenDrone/hardware
+    python3 wrl_to_step.py --rebuild ~/Incutec/OpenDrone/hardware   # every one of ours
+    python3 wrl_to_step.py --fill-missing ~/Incutec/OpenDrone/hardware
 
 --rebuild walks a tree and regenerates every .step THIS SCRIPT wrote that
 is missing colour, next to its own .wrl. It matches on the OCC header, so
@@ -598,7 +598,7 @@ def rebuildable(root, force=False):
     return out
 
 
-CATALOGUE = os.path.expanduser("~/OpenDrone/hardware/KiCad-Library/3dmodel")
+CATALOGUE = os.path.expanduser("~/Incutec/OpenDrone/hardware/KiCad-Library/3dmodel")
 
 # How far a catalogue model may differ from the board's own before it counts
 # as a different part. The largest genuine match measured across the repos is

@@ -125,7 +125,7 @@ def gate5(board):
 
 
 WEB_REPO = os.environ.get(
-    "OPENDRONE_WEB", os.path.expanduser("~/OpenDrone/software/OpenDrone-Web"))
+    "OPENDRONE_WEB", os.path.expanduser("~/Incutec/OpenDrone/web"))
 
 
 def gate6(board):

@@ -24,7 +24,7 @@ system one:
 
 ```bash
 KPY=/Applications/KiCad/KiCad.app/Contents/Frameworks/Python.framework/Versions/Current/bin/python3
-$KPY ~/OpenDrone/software/OpenDrone-Scripts/kicad/export_step.py --all
+$KPY ~/Incutec/scripts/kicad/export_step.py --all
 ```
 
 `render_board.py` additionally needs ImageMagick (`magick`).
@@ -174,18 +174,11 @@ docs. Then confirm the committed firmware still matches the board: a revision
 that moves no GPIO net leaves the Betaflight uf2 and the AM32 target valid, and
 that is a netlist diff, not an assumption.
 
-**7b. Compliance evidence and DoC.** A revision that ships to a customer ships
-with a Declaration of Conformity issued for that revision, re-issued when the
-revision changes. The standards-to-evidence matrix, run status and the scope
-argument live in `testing/OpenDrone-Testing/Compliance/README.md`; the DoC and
-technical file templates and the company-side records (registrations,
-insurance) live in the incutec vault under `compliance/`. Per revision: diff
-against the last shipped revision and record in the technical file whether the
-change touches EMC-relevant circuitry (switchers, clocks, the RF path, I/O
-filtering); an untouched circuit keeps its previous evidence, a touched one
-re-runs the affected pre-screens. For OpenRX the DoC pins the firmware version,
-so a firmware change re-issues it too. The maintainer signs; an agent never
-signs or publishes a DoC.
+**7b. Compliance evidence and DoC.** The sole scope, standards, declaration-unit
+and release-gate truth is `product/CE.md` in the compliance repository; test
+definitions and runs are evidence only. Follow its lifecycle-control rules for
+every hardware, BOM, firmware, antenna or intended-use change. The maintainer
+signs; an agent never signs or publishes a DoC.
 
 **8. Tag and publish.** Tag `revN`, then attach the STEP set and the
 schematic PDFs to the release: `<Repo>-<rev>.step`,
@@ -208,10 +201,10 @@ gh release upload rev3.1 export/OpenX-rev3.1.step hardware/production/OpenX-rev3
 board repos: art from the board files, specs from the README tables, release
 assets from GitHub. `scripts/boards.config.json` and
 `scripts/repo-sync.config.json` map product handles to the checkouts under
-`~/OpenDrone/hardware` (`OPENDRONE_HARDWARE` overrides the root):
+`~/Incutec/OpenDrone/hardware` (`OPENDRONE_HARDWARE` overrides the root):
 
 ```bash
-cd ~/OpenDrone/software/OpenDrone-Web
+cd ~/Incutec/OpenDrone/web
 npm run gen:board-art     # public/boards/<handle>/{front,back}.png, board.svg
 npm run gen:components    # public/boards/<handle>/components.json
 npm run gen:schematics    # public/schematics/<handle>/*.svg + manifest.json
@@ -402,10 +395,10 @@ faceted faces. Needs `pip install cadquery-ocp`, system python.
 
 ```bash
 python3 kicad/wrl_to_step.py model.wrl -o model.step
-python3 kicad/wrl_to_step.py --rebuild ~/OpenDrone/hardware      # all of ours
-python3 kicad/wrl_to_step.py --rebuild ~/OpenDrone/hardware --force
-python3 kicad/wrl_to_step.py --fill-missing ~/OpenDrone/hardware
-python3 kicad/wrl_to_step.py --prefer-catalogue ~/OpenDrone/hardware [--apply]
+python3 kicad/wrl_to_step.py --rebuild ~/Incutec/OpenDrone/hardware      # all of ours
+python3 kicad/wrl_to_step.py --rebuild ~/Incutec/OpenDrone/hardware --force
+python3 kicad/wrl_to_step.py --fill-missing ~/Incutec/OpenDrone/hardware
+python3 kicad/wrl_to_step.py --prefer-catalogue ~/Incutec/OpenDrone/hardware [--apply]
 ```
 
 **`--prefer-catalogue` undoes a rebuild that never needed doing.** A model
@@ -557,7 +550,7 @@ copy, with the source board never written:
 repo's `export/`, which is the folder you drag into Onshape:
 
 ```bash
-$KPY kicad/export_step.py --all --products --preset standard --outdir ~/OpenDrone/_onshape
+$KPY kicad/export_step.py --all --products --preset standard --outdir ~/Incutec/OpenDrone/_onshape
 ```
 
 10 boards, 133 MB. `--preset outline` (`--board-only`) gives the same set at
@@ -911,9 +904,9 @@ Build the set, then attach it to that repo's rev release:
 
 ```bash
 $KPY kicad/check_models.py --all --products --repo OpenRX --blocking-only && {
-  rm -rf ~/OpenDrone/hardware/OpenRX/export                   # see below
+  rm -rf ~/Incutec/OpenDrone/hardware/OpenRX/export                   # see below
   $KPY kicad/export_step.py --all --products --repo OpenRX
-  gh release upload rev3.1 ~/OpenDrone/hardware/OpenRX/export/*.step \
+  gh release upload rev3.1 ~/Incutec/OpenDrone/hardware/OpenRX/export/*.step \
      -R OpenDrone-hw/OpenRX
 }
 ```
@@ -948,8 +941,8 @@ one writes the file via pcbnew. It refuses to run while KiCad is open; `--force`
 overrides, but only ever point it at a throwaway copy.
 
 ```bash
-R=~/OpenDrone/software/OpenDrone-Scripts/kicad/render_board.py
-cd ~/OpenDrone/hardware
+R=~/Incutec/scripts/kicad/render_board.py
+cd ~/Incutec/OpenDrone/hardware
 
 $KPY $R OpenRX/OpenRX-Gemini/OpenRX-Gemini.kicad_pcb     --top OpenRX/images/openrx-gemini-front.png    --bottom OpenRX/images/openrx-gemini-back.png
 $KPY $R OpenRX/OpenRX-Lite/OpenRX-Lite.kicad_pcb         --top OpenRX/images/openrx-lite-front.png      --bottom OpenRX/images/openrx-lite-back.png
@@ -1087,7 +1080,7 @@ where they are:
 - `OpenFC-Lite-Mini/hardware/tools/add_emc_note.py`: Mini only.
 - `OpenESC-20x20/hardware/tools/esc_thermal.py`, `flash_openesc20.sh`.
 - `OpenRX/verification/`: BOM and GPIO continuity checks tied to that board set.
-- `OpenDrone-Testing/Bench/`: drives bench hardware, belongs with the test records.
+- `incutec-testing/Bench/`: drives bench hardware, belongs with the test records.
 - `OpenDrone-Web/scripts/`: that app's own build and deploy tooling.
 - `KiCad-Library/tools/` (`build-parts-index.py`, `bump-all.sh`): operates on that
   repo's own contents and is vendored into 7 board repos as a submodule. The 7

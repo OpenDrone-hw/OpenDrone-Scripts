@@ -25,7 +25,7 @@ Usage:
 import re, os, sys, glob, collections
 
 KI = '/Applications/KiCad/KiCad.app/Contents/SharedSupport/3dmodels'
-HW = os.path.expanduser('~/OpenDrone/hardware')
+HW = os.path.expanduser('~/Incutec/OpenDrone/hardware')
 
 # ---------- STEP measurement ----------
 _cache = {}

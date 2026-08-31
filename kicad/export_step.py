@@ -103,7 +103,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from wrl_to_step import expand_predefined_colours  # noqa: E402
 
 DEFAULT_KICAD_CLI = "/Applications/KiCad/KiCad.app/Contents/MacOS/kicad-cli"
-ROOT = os.path.expanduser("~/OpenDrone/hardware")
+ROOT = os.path.expanduser("~/Incutec/OpenDrone/hardware")
 
 # --subst-models pulls the STEP model where a footprint ships both STEP and
 # VRML; --no-dnp keeps unpopulated parts out so the model matches a shipped board.
