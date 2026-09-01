@@ -5,7 +5,7 @@ plugin's Update button, so the GUI and this script cannot disagree.
 
   KPY=/Applications/KiCad/KiCad.app/Contents/Frameworks/Python.framework/Versions/Current/bin/python3
   $KPY kicad/multiboard/update.py path/to/hardware              # all boards
-  $KPY kicad/multiboard/update.py path/to/hardware OpenAIO-Core  # one board
+  $KPY kicad/multiboard/update.py path/to/hardware board-name  # one board
 
 Ownership: a footprint belongs to the board it is already on. A symbol that is
 on no board yet goes to the board you name (one-board call, same as the Update

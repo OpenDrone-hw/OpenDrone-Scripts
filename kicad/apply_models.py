@@ -10,13 +10,12 @@ refreshed. This does both, and touches ONLY the 3D model reference: pads, nets,
 placement, values and the land pattern are never read or written.
 
 Offset and rotation are reset on a swap. KiCad stock models are authored
-origin-at-footprint-origin with the board face at Z=0; the easyeda imports carry
-a compensating offset that does not transfer, which is what made an earlier
-hand-swap drop the USB-C clean out of the render.
+origin-at-footprint-origin with the board face at Z=0; imported models may carry
+a compensating offset that does not transfer to a replacement.
 
-  apply_models.py --map map.json [--apply]      retarget model files
-  apply_models.py --fixes model-fixes.json [--apply]   correct placement
-  apply_models.py --audit                       find placement to correct
+  apply_models.py --root DIR --map map.json [--apply]      retarget model files
+  apply_models.py --root DIR --fixes fixes.json [--apply]  correct placement
+  apply_models.py --root DIR --audit                       find placement to correct
 
 All three are a dry run unless --apply is given.
 
@@ -30,10 +29,10 @@ the current intent. Format and the reasoning behind each entry are in the
 file itself; --audit is how new entries are found rather than noticed by
 eye in CAD.
 """
-import json, math, os, re, sys, glob, argparse, collections
+import json, math, os, re, glob, argparse, collections
 import pcbnew
 
-HW = os.path.expanduser('~/Incutec/OpenDrone/hardware')
+HW = ""
 KICAD_3D = ('/Applications/KiCad/KiCad.app/Contents/SharedSupport/3dmodels')
 
 def swap_models(container, mapping, stats, where):
@@ -267,12 +266,16 @@ def audit(fixes):
 
 
 def main():
+    global HW
     ap = argparse.ArgumentParser()
+    ap.add_argument('--root', required=True,
+                    help='root containing the boards and footprint libraries to inspect')
     ap.add_argument('--map')
     ap.add_argument('--fixes')
     ap.add_argument('--audit', action='store_true')
     ap.add_argument('--apply', action='store_true')
     a = ap.parse_args()
+    HW = os.path.abspath(os.path.expanduser(a.root))
     if a.audit:
         cat = json.load(open(a.fixes))['fixes'] if a.fixes else []
         return audit(cat)

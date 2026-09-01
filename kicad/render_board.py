@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-render_board.py — standardized KiCad PCB → PNG renders for the OpenDrone projects.
+render_board.py — standardized KiCad PCB → PNG renders.
 
-Produces the clean board renders used in every OpenDrone README: vias and solder
+Produces clean board renders for documentation: vias and solder
 paste stripped (so copper pads show as gold, not gray paste deposits), no floor
 shadow, transparent background, centered square output.
 
@@ -20,16 +20,16 @@ pixel-identical, so nothing was gained by the risk.
 MUST be run with KiCad's bundled Python (it imports pcbnew):
 
   /Applications/KiCad/KiCad.app/Contents/Frameworks/Python.framework/Versions/Current/bin/python3 \
-      software/OpenDrone-Scripts/kicad/render_board.py hardware/4in1.kicad_pcb --top images/front.png --bottom images/back.png
+      scripts/kicad/render_board.py hardware/4in1.kicad_pcb --top images/front.png --bottom images/back.png
 
 KiCad may stay OPEN: the source board is never written.
 
 Examples:
-  # explicit output names (what the OpenDrone READMEs use)
+  # explicit output names
   render_board.py hardware/4in1.kicad_pcb --top images/front.png --bottom images/back.png
 
   # default names: <outdir>/<stem>-top.png and <stem>-bottom.png
-  render_board.py hardware/OpenFC.kicad_pcb --outdir images/
+  render_board.py path/to/board.kicad_pcb --outdir images/
 
   # keep paste/vias, only one side, custom size
   render_board.py board.kicad_pcb --sides top --keep-paste --keep-vias --size 2000
@@ -167,7 +167,7 @@ def square(magick, out, size):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Standardized OpenDrone KiCad board renders (via/paste-free, no shadow).")
+    ap = argparse.ArgumentParser(description="Standardized KiCad board renders (via/paste-free, no shadow).")
     ap.add_argument("pcb", help="path to the .kicad_pcb")
     ap.add_argument("--top", help="output path for the top render")
     ap.add_argument("--bottom", help="output path for the bottom render")

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-packaging_art.py — flat gold/white vector board art for OpenDrone packaging.
+packaging_art.py — flat vector artwork from KiCad boards.
 
 Exports front/back of a .kicad_pcb as single-color vector SVG in the black/gold
 packaging theme:
@@ -19,7 +19,7 @@ copies. KiCad may stay open.
 MUST be run with KiCad's bundled Python (it imports pcbnew):
 
   KPY=/Applications/KiCad/KiCad.app/Contents/Frameworks/Python.framework/Versions/Current/bin/python3
-  $KPY software/OpenDrone-Scripts/kicad/packaging_art.py hardware/4in1.kicad_pcb --outdir packaging/ --png
+  $KPY scripts/kicad/packaging_art.py hardware/4in1.kicad_pcb --outdir packaging/ --png
 
 Examples:
   # gold-on-white theme (default), SVG + PNG previews

@@ -13,19 +13,19 @@ bounding box matches the incumbent within a tolerance, so a swap can shrink a
 model but never change what the board looks like.
 
 Sources searched, in order of trust:
-  1. other OpenDrone repos      - same filename, already in use on a shipped board
+  1. other repositories under --root - same filename already used elsewhere
   2. KiCad stock 3dmodels       - matched on package designator in the name
 
 Nothing is modified. Feed the accepted swaps to apply_models.py.
 
 Usage:
-  model_audit.py <board.kicad_pcb> [--tol-mm 0.15]
+  model_audit.py <board.kicad_pcb> [--root DIR] [--tol-mm 0.15]
   model_audit.py --measure <file.step> [...]      # just measure, no audit
 """
-import re, os, sys, glob, collections
+import argparse, re, os, glob, collections
 
 KI = '/Applications/KiCad/KiCad.app/Contents/SharedSupport/3dmodels'
-HW = os.path.expanduser('~/Incutec/OpenDrone/hardware')
+HW = ""
 
 # ---------- STEP measurement ----------
 _cache = {}
@@ -85,7 +85,7 @@ def build_index():
     idx = collections.defaultdict(list)     # basename -> [paths]
     allm = []
     for p in glob.glob(f'{HW}/**/*.3dshapes/*.step', recursive=True):
-        idx[os.path.basename(p)].append(p); allm.append(('opendrone', p))
+        idx[os.path.basename(p)].append(p); allm.append(('tree', p))
     for p in glob.glob(f'{KI}/*.3dshapes/*.step'):
         allm.append(('kicad', p))
     return idx, allm
@@ -106,8 +106,16 @@ def fits(a, b, tol):
     return all(abs(x-y) <= tol for x, y in zip(A, B))
 
 def main():
-    if '--measure' in sys.argv:
-        for p in sys.argv[sys.argv.index('--measure') + 1:]:
+    global HW
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument('pcb', nargs='?')
+    ap.add_argument('--root', help='root searched for same-name replacement models; defaults to the PCB directory')
+    ap.add_argument('--tol-mm', type=float, default=0.15)
+    ap.add_argument('--measure', nargs='+', metavar='STEP')
+    a = ap.parse_args()
+    if a.measure:
+        for p in a.measure:
             r = measure(p)
             if not r:
                 print(f"UNREADABLE  {p}")
@@ -117,8 +125,11 @@ def main():
             print(f"{faces:6d} faces {kb:8.0f} kB  dims {d[0]:6.2f} x {d[1]:6.2f} x {d[2]:6.2f}  "
                   f"{('ARTWORK(%d)' % spl) if spl >= 100 else 'clean':14s}  {p}")
         return
-    pcb = sys.argv[1]
-    tol = float(sys.argv[sys.argv.index('--tol-mm')+1]) if '--tol-mm' in sys.argv else 0.15
+    if not a.pcb:
+        ap.error('a .kicad_pcb or --measure is required')
+    pcb = a.pcb
+    tol = a.tol_mm
+    HW = os.path.abspath(os.path.expanduser(a.root or os.path.dirname(pcb) or '.'))
     prjdir = os.path.dirname(os.path.abspath(pcb))
     s = open(pcb, encoding='utf8', errors='replace').read()
     used = collections.Counter(re.findall(r'\(model\s+"([^"]+)"', s))

@@ -90,9 +90,9 @@ FIELDS = ("file", "offset", "scale", "rotation", "visible")
 
 # --- E6: what --subst-models actually swaps in -------------------------------
 # export_step.py passes --subst-models because KiCad's STEP exporter cannot read
-# VRML: without it every .wrl-referenced part is silently DROPPED (OpenRX-Lite
-# goes 9.1 MB -> 3.1 MB). The flag makes kicad-cli use a same-named .step
-# instead. That is only safe while the two files are the same geometry. Where
+# VRML: without it every .wrl-referenced part is silently dropped. The flag
+# makes kicad-cli use a same-named .step instead. That is only safe while the
+# two files are the same geometry. Where
 # they are not, the 3D viewer stays right (it renders the .wrl) and the STEP
 # export is wrong, which is exactly the failure that is hard to catch by eye.
 WRL_POINTS = re.compile(r"point\s*\[(.*?)\]", re.S)

@@ -13,7 +13,7 @@ _REPO_ROOT = Path(__file__).resolve().parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from openfc_pcb_extract import parse_board  # type: ignore
+from pcb_extract import parse_board  # type: ignore
 
 
 def sheet_from_net(net: str) -> str:
@@ -40,14 +40,14 @@ def matches_any(net: str, pats: List[re.Pattern[str]]) -> bool:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Generate human-readable net connectivity from OpenFC.kicad_pcb")
-    ap.add_argument("--pcb", default="OpenFC.kicad_pcb", help="Path to KiCad PCB file")
+    ap = argparse.ArgumentParser(description="Generate human-readable net connectivity from a KiCad PCB")
+    ap.add_argument("pcb", help="Path to a KiCad PCB file")
     ap.add_argument("--outdir", default="analysis/net_connectivity", help="Output directory")
     ap.add_argument(
         "--expand",
         action="append",
         default=[],
-        help="Regex for nets to fully expand in Markdown (repeatable). If omitted, uses defaults.",
+        help="Regex for nets to fully expand in Markdown (repeatable)",
     )
     ap.add_argument("--max-nodes", type=int, default=30, help="Max nodes to print for a net before truncating")
     args = ap.parse_args()
@@ -55,24 +55,7 @@ def main() -> int:
     outdir = Path(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
 
-    default_expand = [
-        r"^/ELRS/",
-        r"^/UART",
-        r"^/I2C_",
-        r"^/IMU/",
-        r"^/BLACKBOX/",
-        r"^/OSD/",
-        r"^/RP2350A/",
-        r"^/PADS/",
-        r"^Net-\(U36-USB_D[PM]\)",
-        r"^/RP2350A/D[+-]$",
-        r"^\+3\.3V",
-        r"^\+5V",
-        r"^\+BATT$",
-        r"^VBUS|^VUSB",
-        r"^GND$",
-    ]
-    expand_pats = compile_patterns(args.expand if args.expand else default_expand)
+    expand_pats = compile_patterns(args.expand)
 
     footprints, _nets_by_id = parse_board(Path(args.pcb))
 
@@ -108,7 +91,7 @@ def main() -> int:
         by_sheet[sheet_from_net(net)].append(net)
 
     lines: List[str] = []
-    lines.append("# OpenFC Net Connectivity (from PCB)")
+    lines.append(f"# {Path(args.pcb).stem} Net Connectivity (from PCB)")
     lines.append("")
     lines.append(f"Source: `{args.pcb}`")
     lines.append(f"Generated: `{outdir}/nets.md` and `{outdir}/nets.csv`")
@@ -143,4 +126,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

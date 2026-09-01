@@ -15,7 +15,7 @@ _REPO_ROOT = Path(__file__).resolve().parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from openfc_netlist_extract import ParseError, parse_sexpr, tokenize_sexpr  # type: ignore
+from netlist_extract import ParseError, parse_sexpr, tokenize_sexpr  # type: ignore
 
 
 @dataclass
@@ -128,8 +128,8 @@ def is_ic_ref(ref: str) -> bool:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Extract per-footprint pad connectivity from OpenFC.kicad_pcb")
-    ap.add_argument("--pcb", default="OpenFC.kicad_pcb", help="Path to KiCad PCB file")
+    ap = argparse.ArgumentParser(description="Extract per-footprint pad connectivity from a KiCad PCB")
+    ap.add_argument("pcb", help="Path to a KiCad PCB file")
     ap.add_argument("--outdir", default="analysis/pcb_extract", help="Output directory")
     args = ap.parse_args()
 

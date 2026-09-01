@@ -4,11 +4,10 @@ from __future__ import annotations
 import argparse
 import csv
 import json
-import os
 import re
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 
 Token = str
@@ -238,7 +237,7 @@ def is_ic(ref: str) -> bool:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Extract per-sheet connectivity summaries from KiCad .net")
-    ap.add_argument("--netlist", default="OpenFC.net", help="Path to KiCad netlist (s-expression)")
+    ap.add_argument("netlist", help="Path to a KiCad s-expression netlist")
     ap.add_argument("--outdir", default="analysis/netlist_extract", help="Output directory")
     args = ap.parse_args()
 
@@ -330,4 +329,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

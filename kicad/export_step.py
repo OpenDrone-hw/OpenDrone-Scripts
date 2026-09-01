@@ -1,18 +1,17 @@
 #!/usr/bin/env python3
 """
-export_step.py — standardized STEP exports for the OpenDrone boards.
+export_step.py — standardized STEP exports for KiCad boards.
 
 kicad-cli's default STEP export writes only the board body and the component 3D
 models: no copper, no pads, no silkscreen. Imported into Fusion that is a bare
 green slab with parts on it. This script drives kicad-cli with a fixed flag set
-so every OpenDrone STEP looks the same and lands in one predictable place, the
-same in every repo:
+so every generated STEP uses the same representation and lands in the same
+predictable location:
 
     <repo root>/export/<ProductName>.step
 
-Repo root, not next to the .kicad_pcb — board files live at different depths per
-repo (OpenRX/OpenRX-Lite/, OpenFC-Lite/hardware/), so anchoring to the board
-would scatter the output. One directory per repo, always at the top.
+In batch mode output is rooted at each discovered repository rather than beside
+the `.kicad_pcb`, because board files may live at different directory depths.
 
 THE STANDARD EXPORT IS: board body + components + pads + silkscreen, plus
 copper that a mask opening leaves bare. Each decision below is measured:
@@ -29,11 +28,9 @@ copper that a mask opening leaves bare. Each decision below is measured:
   to polygons IS the openings, a copper layer rendered to polygons is the copper,
   and the intersection is the bare metal. See add_mask_exposed_copper.
 
-  Tracks and zones are EXCLUDED, for FILE SIZE, not visibility. Including them
-  measures 1.53x on OpenRX-Lite and 1.79x on OpenFC-Lite. Do not repeat the older
-  claim that they are hidden under the mask: the mask is excluded here, so that
-  copper would sit about 35 um proud of the board and would be plainly visible,
-  exactly as the pads are.
+  Tracks and zones are EXCLUDED for FILE SIZE, not visibility. The mask is
+  excluded here, so that copper would sit about 35 um proud of the board and
+  would be plainly visible, exactly as the pads are.
 
   Everything past Edge.Cuts is CUT (--clip, on by default), in two passes:
     1. A drill that straddles the outline is a castellation. The hole is
@@ -47,11 +44,8 @@ copper that a mask opening leaves bare. Each decision below is measured:
        place fails silently when the pad is already PAD_SHAPE_CUSTOM or its
        padstack is front/inner/back.
 
-  Scope of the cut, honestly: gross overhang is gone on every board (OpenRX-Lite
-  went from 648 pad points up to 2.25 mm outside, to none). The 30x30 panel still
-  retains about 120 pad points up to 4.6 um outside, from MIN_OUTSIDE_MM2 and
-  polygonisation error. Silkscreen is NOT clipped and can overhang. Component 3D
-  models are NOT clipped: that needs a CAD kernel, which is not available here.
+  Silkscreen is NOT clipped and can overhang. Component 3D models are NOT
+  clipped: that needs a CAD kernel, which is not available here.
 
 Transparency is zeroed in the written STEP, the export timestamp is normalised,
 and product names are rewritten to the product. The file is still not
@@ -68,21 +62,19 @@ Clipping needs pcbnew, so run with KiCad's bundled Python, same as
 render_board.py. Without it the export still runs, unclipped, with a warning:
 
   KPY=/Applications/KiCad/KiCad.app/Contents/Frameworks/Python.framework/Versions/Current/bin/python3
-  $KPY software/OpenDrone-Scripts/kicad/export_step.py --all
+  $KPY scripts/kicad/export_step.py --all --root path/to/hardware
 
 KiCad may stay open: every board edit happens on a temp copy.
 
-These files are RELEASE ASSETS, not tracked source: `export/` is gitignored in
-every board repo and the set is attached to the repo's rev release with
-`gh release upload`. --products drops fab panels and bench fixtures, which
-export fine but are not something anyone fits into their own design.
+`--products` drops fabrication panels and bench fixtures from a batch; those
+projects export correctly but are not product-level fit-check models.
 
 Usage:
-  export_step.py --all                       # every board discovered under hardware/
-  export_step.py --all --repo OpenRX         # one repo
-  export_step.py --all --products            # publishable boards only
+  export_step.py --all --root path/to/hardware
+  export_step.py --all --root path/to/hardware --repo board-repo
+  export_step.py --all --root path/to/hardware --products
   export_step.py <board.kicad_pcb> -o out.step
-  export_step.py --all --dry-run
+  export_step.py --all --root path/to/hardware --dry-run
 """
 import argparse
 import collections
@@ -103,16 +95,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from wrl_to_step import expand_predefined_colours  # noqa: E402
 
 DEFAULT_KICAD_CLI = "/Applications/KiCad/KiCad.app/Contents/MacOS/kicad-cli"
-ROOT = os.path.expanduser("~/Incutec/OpenDrone/hardware")
-
 # --subst-models pulls the STEP model where a footprint ships both STEP and
 # VRML; --no-dnp keeps unpopulated parts out so the model matches a shipped board.
 # --fill-all-vias: do NOT cut via holes in the conductor layers. A via-in-pad
-# array otherwise punches a grid of circles through every pad, which is what the
-# Onshape import kept showing. render_board.py has always stripped vias for the
-# README images, so the 2D renders never revealed it. Measured on OpenESC-20x20:
-# 16.16 MB -> 14.47 MB, and byte-identical to deleting all 1050 vias with pcbnew,
-# so the flag alone is enough and the board is never mutated for it.
+# array otherwise punches a grid of circles through every pad. The flag avoids
+# that geometry without mutating the board.
 COMMON = ["--subst-models", "--no-dnp", "--fill-all-vias"]
 
 STANDARD = ["--include-pads", "--include-silkscreen"]
@@ -166,10 +153,7 @@ TEMP_PREFIX = ".export_step_tmp_"
 #      silently vanishes from the output.
 #   2. These directories are skipped wherever they appear.
 #      Every dot directory is skipped, not just the ones named here. A
-#      `.history_trim/` left beside a board held a stale copy of it, complete
-#      with its .kicad_pro, so discovery found two boards of the same name and
-#      the stale one, exported second, overwrote the real OpenFC-Lite-Mini with
-#      a 5.7 MB file missing 18 components.
+#      This prevents stale editor-history copies from being exported as projects.
 SKIP_DIRS = {"backups", "archive", "libs", "__pycache__", "node_modules",
              "export", "templates"}
 
@@ -180,7 +164,7 @@ SKIP_DIRS = {"backups", "archive", "libs", "__pycache__", "node_modules",
 # one shared place, rather than as a marker file in every board repo.
 #
 #   -panel      step-and-repeat fab panel, not a shipped board
-#   -all        multi-variant fab panel (OpenRX-all)
+#   -all        multi-variant fab panel
 #   -QC         bench QC fixture
 #   -Flashing   bench flashing jig
 #   -MotorTest  bench motor test rig
@@ -194,10 +178,8 @@ def is_product(stem):
 def product_name(repo, stem):
     """Name the STEP after the product, derived from repo + board stem.
 
-    Board stems are not unique on their own (OpenFC-Lite and OpenFC-Lite-Mini
-    both use OpenFC.kicad_pcb) and are sometimes internal (4in1). Where repo and
-    stem overlap, the longer one is the real product name; where they do not,
-    both are needed to stay unambiguous.
+    Board stems are not necessarily unique and may be internal project names.
+    Where repo and stem overlap, use the longer one; otherwise combine them.
     """
     r, s = repo.lower(), stem.lower()
     if s in r or r in s:
@@ -212,13 +194,8 @@ KICAD_COMMON = os.path.expanduser("~/Library/Preferences/kicad/10.0/kicad_common
 def kicad_path_vars(project_dir=None):
     """Every path variable KiCad itself would substitute, one dict.
 
-    Not just the built-in ones. `OPENDRONE_LIB` is defined in KiCad's own
-    settings on this machine and in some repos' .kicad_pro instead, and a
-    tool that only knows the built-ins reads a board full of
-    ${OPENDRONE_LIB} paths as a board with no 3D models at all. That is
-    what had check_models reporting OpenAIO as missing 10 models and 20
-    footprints while kicad-cli, which does read those settings, exported
-    it complete.
+    This includes custom variables defined in KiCad's settings or a project's
+    `.kicad_pro`; resolving only the built-ins would silently lose models.
 
     Precedence follows KiCad: the project's own text_variables win over
     the global settings, and the process environment is the last word.
@@ -529,10 +506,8 @@ def notch_edge_cuts(board, straddling, inside, pcbnew):
     # The owning item is MOVED to Cmts.User, not removed. board.Remove() hands
     # ownership to Python without taking it, which corrupts the SWIG proxies:
     # every later GetFootprints() then yields raw SwigPyObject and the next
-    # attribute access dies with "'SwigPyObject' object is not iterable". That
-    # crashed the two boards with the most edge graphics, OpenESC-30x30 4in1
-    # (141 items) and OpenRX-all (54), and took the rest of the --all batch down
-    # with them. Cmts.User is in no export preset, so the moved item is inert.
+    # attribute access dies with "'SwigPyObject' object is not iterable".
+    # Cmts.User is in no export preset, so the moved item is inert.
     for owner in owners:
         items[owner].SetLayer(pcbnew.Cmts_User)
         for i in by_owner[owner]:
@@ -654,16 +629,10 @@ def clip_board_to_outline(board_path, scratch):
             pos = pad.GetPosition()
             hole = circle(pos.x, pos.y, dx, dy)
             # STRADDLING means a real share of the hole on each side of the
-            # edge. Testing only the part outside also catches every drill that
-            # misses the board entirely, so a board with an off-board footprint
-            # anywhere on the sheet looked like it had castellations:
-            # OpenRX-Lite has none and reported 27. Testing a bare area on both
-            # sides is not enough either, because a hole that merely sits in a
-            # rounded corner leaves a sliver over the line: the 30x30 ESC
-            # reported two of those. A castellation is cut in half by the
-            # router, so nothing near half is ever thrown away by asking for a
-            # tenth. Both went through the polygon rewrite and cost those
-            # boards every arc they had.
+            # edge. Testing only the part outside also catches drills that miss
+            # the board entirely. Testing a bare area on both sides also catches
+            # holes that merely sit in rounded corners. A castellation is cut in
+            # half by the router, so require a material share on both sides.
             out, cut = outside_area(hole, outline), inside_area(hole, outline)
             if (out > MIN_OUTSIDE_MM2 and cut > MIN_OUTSIDE_MM2
                     and min(out, cut) > 0.1 * (out + cut)):
@@ -788,7 +757,7 @@ def add_mask_exposed_copper(board, outline, pcbnew):
     """Draw copper that a soldermask opening leaves bare, as gold pads.
 
     Graphics on F.Mask/B.Mask (logos, lettering) are mask openings: on the real
-    board they expose bare copper, which is how the RX in "OpenRX" reads. There
+    board they expose bare copper. There
     is no flag for this. kicad-cli models no mask apertures at all, so including
     the mask exports two unbroken sheets and shows nothing.
 
@@ -924,8 +893,8 @@ def recolour_pads_gold(text):
 
     The pad colour is found, not assumed: STYLED_ITEMs are grouped by the
     COLOUR_RGB they resolve to, and the pad colour is the neutral grey whose
-    styled items are all MANIFOLD_SOLID_BREPs. That is exactly the pad solids
-    (758 of them on OpenESC-20x20) and never a component, whose models are
+    styled items are all MANIFOLD_SOLID_BREPs. That identifies pad solids and
+    not components, whose models are
     styled per ADVANCED_FACE. Matching on the literal 0.735 would break the
     first time KiCad changes its default copper colour.
     """
@@ -990,8 +959,7 @@ def post_process(step_path, temp_stem, product):
     """Zero transparency, and name the assembly after the product.
 
     kicad-cli names every STEP product after the input filename, so exporting
-    from the clipped temp copy would ship products called
-    '.export_step_tmp_OpenFC_pad'. Rename them back.
+    from the clipped temp copy would expose the temporary filename. Rename it.
     """
     with open(step_path, encoding="utf8", errors="surrogateescape") as fh:
         text = fh.read()
@@ -1178,7 +1146,7 @@ def main():
                    help="escape hatch only; the repo standard is 'standard'")
     p.add_argument("--no-clip", dest="clip", action="store_false",
                    help="keep copper that hangs past Edge.Cuts")
-    p.add_argument("--root", default=ROOT, help=f"hardware dir (default {ROOT})")
+    p.add_argument("--root", help="hardware directory (required with --all)")
     p.add_argument("--kicad-cli", help="path to kicad-cli")
     p.add_argument("--outdir",
                    help="with --all, write every STEP into this one directory instead of "
@@ -1192,6 +1160,11 @@ def main():
     p.add_argument("--dry-run", action="store_true", help="print commands only")
     p.add_argument("extra", nargs="*", help="extra kicad-cli flags")
     a = p.parse_args()
+
+    if a.all and not a.root:
+        p.error("--root is required with --all")
+    if a.root:
+        a.root = os.path.abspath(os.path.expanduser(a.root))
 
     global STRIP_FP_SILK, GOLD_PADS
     STRIP_FP_SILK = not a.keep_fp_silk

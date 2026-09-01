@@ -35,8 +35,8 @@ Usage:
     python3 wrl_to_step.py model.wrl [-o model.step]
     python3 wrl_to_step.py --check model.wrl     # parse and report only
     python3 wrl_to_step.py model.wrl --no-unify  # keep every facet a face
-    python3 wrl_to_step.py --rebuild ~/Incutec/OpenDrone/hardware   # every one of ours
-    python3 wrl_to_step.py --fill-missing ~/Incutec/OpenDrone/hardware
+    python3 wrl_to_step.py --rebuild path/to/hardware
+    python3 wrl_to_step.py --fill-missing path/to/hardware
 
 --rebuild walks a tree and regenerates every .step THIS SCRIPT wrote that
 is missing colour, next to its own .wrl. It matches on the OCC header, so
@@ -598,31 +598,24 @@ def rebuildable(root, force=False):
     return out
 
 
-CATALOGUE = os.path.expanduser("~/Incutec/OpenDrone/hardware/KiCad-Library/3dmodel")
-
 # How far a catalogue model may differ from the board's own before it counts
-# as a different part. The largest genuine match measured across the repos is
-# 0.062 mm (the boot button's dome), the smallest genuine mismatch is 0.558 mm
-# (two different USB-C connectors sharing one name), so anywhere in between
-# separates them and 0.1 mm sits at the safe end.
+# as a different part. This tolerance should remain well below the measured
+# difference between distinct packages that happen to share a filename.
 CATALOGUE_TOL_MM = 0.1
 
 
-def prefer_catalogue(root, catalogue=CATALOGUE, tol=CATALOGUE_TOL_MM, apply=False):
+def prefer_catalogue(root, catalogue, tol=CATALOGUE_TOL_MM, apply=False):
     """Swap a mesh-rebuilt .step for the catalogue's real B-rep of the same part.
 
     A model this script wrote is a triangle soup: a few hundred flat facets
     where the vendor's own file has a dozen cylinders, and often an open shell
     where the mesh did not close. An open shell is not a solid, so an importer
-    has no part to colour and paints it from its own palette instead: that is
-    every colour complaint we have had, one for one -- the boot button, the two
-    0900 filters, the TLV7031 in its X2SON-4, the USB-C shell.
+    may colour it from its own palette.
 
     KiCad-Library already holds the vendor B-rep for most of them. Where the
     two agree on size they are the same part and the catalogue copy is simply
     better, so it replaces the local one. Where they do not, they are NOT the
-    same part and nothing is touched: OpenFC-Lite's USB-C is 11.90 x 8.05 and
-    the catalogue's is 11.34 x 7.60, two different connectors under one name.
+    same part and nothing is touched.
     Size is the test because it is the one property a wrong part cannot fake.
     """
     from OCP.STEPControl import STEPControl_Reader
@@ -763,13 +756,18 @@ def main():
     ap.add_argument("--fill-missing", metavar="ROOT",
                     help="write a .step beside every .wrl that has none")
     ap.add_argument("--prefer-catalogue", metavar="ROOT",
-                    help="replace mesh-rebuilt models with the KiCad-Library "
-                         "B-rep of the same part, where the two agree on size")
+                    help="replace mesh-rebuilt models with catalogue B-reps "
+                         "of the same part, where the two agree on size")
+    ap.add_argument("--catalogue",
+                    help="model catalogue directory (required with --prefer-catalogue)")
     ap.add_argument("--apply", action="store_true",
                     help="with --prefer-catalogue: write, instead of listing")
     a = ap.parse_args()
     if a.prefer_catalogue:
+        if not a.catalogue:
+            ap.error("--catalogue is required with --prefer-catalogue")
         return prefer_catalogue(os.path.expanduser(a.prefer_catalogue),
+                                os.path.expanduser(a.catalogue),
                                 apply=a.apply)
     if a.fill_missing:
         return fill_missing(os.path.expanduser(a.fill_missing),

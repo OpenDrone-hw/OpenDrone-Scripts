@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
-"""Release step 3b as a script: check a Fabrication Toolkit export against
-the board and schematic it claims to come from. Written after 30x30-Rev3.zip
-shipped matching no committed state of that board.
+"""Check a Fabrication Toolkit export against the board and schematic it
+claims to come from.
 
 Checks, all mechanical:
   C1  designators.csv == board footprints minus exclude_from_bom
@@ -123,15 +122,13 @@ def main():
     fails = []
 
     # C0 duplicate designators. The dict/set comparisons below collapse
-    # duplicates silently, so a board with the same reference on two
-    # footprints (OpenRX-Lite TP3-TP5, 2026-08-25) would pass C1 while
-    # the export is ambiguous.
+    # duplicates silently, so duplicate references could otherwise pass C1
+    # while leaving the export ambiguous.
     dup_board = sorted(r for r, n in collections.Counter(
         r.upper() for r, _ in inc + exc).items() if n > 1)
     dup_export = sorted(r for r, n in collections.Counter(
         r.upper() for r in desg).items() if n > 1)
-    # Warning, not a gate: the 20x20 ships with a documented doubled pair
-    # (CL50/CL51, rev3.1 bulk bank). Anything listed here still needs eyes.
+    # Warning, not a gate: anything listed here still needs manual review.
     if dup_board:
         print(f"C0 warn  duplicate designators on the board: {dup_board[:10]}")
     if dup_export:
