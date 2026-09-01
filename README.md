@@ -50,6 +50,10 @@ default.
 | `kicad/universal_bom.py` | Generate a manufacturer/MPN-aware BOM from a board. |
 | `kicad/quote_pack.py` | Assemble generic and supplier-formatted fabrication inputs. |
 | `kicad/portal_gerbers.py` | Produce a compatibility copy of a Gerber archive for limited upload parsers. |
+| `kicad/gerber_check.py` | Classify and validate a Gerber archive before handoff. |
+| `kicad/handoff_pack.py` | Build a supplier-neutral handoff pack from explicit board inputs. |
+| `kicad/assembly_drawing.py` | Render per-side assembly drawings with pin-1 markings. |
+| `kicad/import_part.py` | Import an LCSC part into an explicitly selected project-local library. |
 | `kicad/set_edgecuts_width.py` | Normalize `Edge.Cuts` widths; dry-run unless `--write` is passed. |
 
 Generated fabrication data is output, not source. Whether it is reviewed,
