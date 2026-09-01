@@ -1,11 +1,7 @@
-# Incutec scripts
+# Retired OpenDrone scripts repository
 
-This repository contains shared automation. The user's request is the task;
-scripts must not discover and execute unrelated work automatically.
-
-Keep behavior deterministic, parameterized, and safe to rerun. Use explicit
-inputs and paths, validate destructive targets, avoid embedded credentials, and
-make external side effects opt-in. Preserve compatibility where documented and
-add or update tests for behavior changes. Follow the repository README and
-project configuration for validation commands.
-
+Do not add or move automation into this repository. Reusable hardware
+management software belongs in the Incutec `scripts/` repository. OpenDrone
+organization standards and portfolio configuration belong in the OpenDrone
+`.github` repository, and board-specific behavior belongs in its product
+repository.
